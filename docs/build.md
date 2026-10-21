@@ -61,9 +61,20 @@ or Volta.
 
 Only combinations that have been exercised are listed.
 
-| GPU | Compute capability | Driver | CUDA (build) | OS | Status |
+| GPU | Compute capability | Driver | Build | OS | Status |
 | --- | --- | --- | --- | --- | --- |
-| NVIDIA GeForce RTX 4080 SUPER | 8.9 | 615.71.09 (CUDA 13.4 UMD) | 13.1.115 | Linux x86_64 | tested locally |
+| NVIDIA GeForce RTX 4080 SUPER | 8.9 | 615.71.09 (CUDA 13.4 UMD) | editable, `native` (sm_89), CUDA 13.1.115 | Linux x86_64 | full suite, sanitizers, benchmarks |
+| NVIDIA GeForce RTX 4080 SUPER | 8.9 | 615.71.09 (CUDA 13.4 UMD) | release-architecture wheel, CUDA 13.1.115 (`make wheel gpu-verify`) | Linux x86_64 | full suite in a fresh venv, benchmarks |
+
+Not yet exercised:
+- **Other architectures.** The release wheel contains SASS for sm_75, sm_80,
+  sm_86, sm_90, sm_100 and sm_120 and PTX for compute_120. Those binaries are
+  compiled and checked for spills but have never run on a GPU, and neither
+  has the PTX just-in-time path. A second architecture, ideally a data-centre
+  part with full-rate FP64, is the main open validation gap.
+- **The manylinux_2_28 build.** The cibuildwheel container build has not run
+  yet; it needs Docker and runs in the release workflow.
+- **Drivers.** No driver older than the one listed has been tried.
 
 The statically linked runtime needs a driver that supports CUDA 13.1 for SASS
 execution, or a newer one for PTX just-in-time compilation. Importing

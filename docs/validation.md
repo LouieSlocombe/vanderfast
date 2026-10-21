@@ -28,3 +28,21 @@ hold; neighbour-list reuse equals fresh evaluations; and compute-sanitizer
 (memcheck with leak check, racecheck, synccheck, initcheck) is clean.
 
 Run everything on a GPU machine with `make test-gpu cpp-test sanitize`.
+
+## Release artifacts
+
+The tests above run against an editable development build. A release wheel is
+tested as shipped with `make wheel gpu-verify`, which the release workflow
+also runs:
+
+- `tools/check_wheel.py` confirms the wheel has SASS for every release
+  architecture, compute_120 PTX, no register spills in any vanderfast kernel,
+  and no CUDA library among its dynamic dependencies.
+- The wheel is installed into a fresh virtual environment with PyPI
+  dependencies only (numpy, ase, `dftd3==1.6.0`).
+- The whole suite then runs with `--require-native --require-cuda
+  --require-reference --run-slow` in a scrubbed environment.
+- `tools/gpu_report.py` records the wheel's sha256 with the result.
+
+For commit 7ee4352 this gave 826 passed and 1 skipped (the test that needs
+*no* CUDA device) on an RTX 4080 SUPER.

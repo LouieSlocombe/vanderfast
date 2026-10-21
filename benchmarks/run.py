@@ -48,6 +48,7 @@ SUITES = {
     "standard": Suite(ALL_WORKLOADS, (16, 64, 256, 1024, 4096), 10),
     "full": Suite(ALL_WORKLOADS, (16, 64, 256, 1024, 4096, 16384), 20),
 }
+REFERENCE_REPEATS = 3  # dftd3 calls per case; the median is reported
 MODES = ("cold", "warm-native", "warm-ase-ef", "warm-ase-efs", "rebuild", "trajectory", "memory")
 
 COLD_SCRIPT = """
@@ -285,11 +286,17 @@ def reference_errors(atoms: Atoms, parameters: D3BJParameters) -> dict[str, Any]
 
     cell = _cell(atoms)
     evaluator = ReferenceEvaluator(atoms.numbers, parameters)
+    x = length_to_bohr(atoms.positions)
+    h = None if cell is None else length_to_bohr(cell)
+    samples = []
+    for _ in range(REFERENCE_REPEATS - 1):
+        start = time.perf_counter()
+        evaluator.evaluate(x, h, atoms.pbc)
+        samples.append(1e3 * (time.perf_counter() - start))
     start = time.perf_counter()
-    reference = evaluator.evaluate(
-        length_to_bohr(atoms.positions), None if cell is None else length_to_bohr(cell), atoms.pbc
-    )
-    reference_ms = 1e3 * (time.perf_counter() - start)
+    reference = evaluator.evaluate(x, h, atoms.pbc)
+    samples.append(1e3 * (time.perf_counter() - start))
+    reference_ms = float(np.median(samples))
     properties = ("forces", "stress") if atoms.pbc.all() else ("forces",)
     with D3Context(atoms.numbers, parameters) as ctx:
         ours = ctx.evaluate(atoms.positions, cell=cell, pbc=atoms.pbc, properties=properties)

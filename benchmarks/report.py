@@ -86,12 +86,33 @@ def _cold(cases: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+def _override_reference(document: dict[str, Any], other: dict[str, Any]) -> None:
+    timings = {
+        c["case_id"]: c["errors"]
+        for c in other["cases"]
+        if (c.get("errors") or {}).get("reference_wall_ms") is not None
+    }
+    for case in document["cases"]:
+        errors = case.get("errors")
+        source = timings.get(case["case_id"])
+        if errors is not None and source is not None:
+            errors["reference_wall_ms"] = source["reference_wall_ms"]
+            errors["vs"] = source["vs"]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Print the speed, stage, and cold-start tables of one result file."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("result", type=Path)
+    parser.add_argument(
+        "--reference-timings",
+        type=Path,
+        help="take the dftd3 wall times from this result file (same case ids)",
+    )
     args = parser.parse_args(argv)
     document = json.loads(args.result.read_text(encoding="utf-8"))
+    if args.reference_timings:
+        _override_reference(document, json.loads(args.reference_timings.read_text("utf-8")))
     cases = [c for c in document["cases"] if c["status"] == "ok"]
     failed = [f"{c['case_id']}: {c['status']}" for c in document["cases"] if c["status"] != "ok"]
     for title, table in (

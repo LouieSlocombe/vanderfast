@@ -71,16 +71,33 @@ More in [examples/](examples/): a molecule, crystal stress, a comparison with
 
 ## Performance
 
-Warm energy-and-force evaluations on an RTX 4080 SUPER, against simple-dftd3
-1.6.0 on 28 threads of an i7-14700KF. Default cutoffs: 40 bohr for CN and ATM,
-60 bohr for the pair term.
+Warm energy-and-force evaluations of the release wheel on an RTX 4080 SUPER,
+against simple-dftd3 1.6.0 (conda-forge, OpenMP) on 28 threads of an
+i7-14700KF. Default cutoffs: 40 bohr for CN and ATM, 60 bohr for the pair term.
+Times include host-device transfers and Python. dftd3 was not timed above 1024
+atoms.
 
-PERFORMANCE_TABLE
+| System | Atoms | Term | vanderfast (ms) | dftd3, 28 threads (ms) | Speedup |
+| --- | ---: | --- | ---: | ---: | ---: |
+| NaCl primitive cell | 2 | pair | 0.152 | 0.411 | 3x |
+| NaCl primitive cell | 2 | pair + ATM | 5.65 | 79.9 | 14x |
+| benzene cluster | 1020 | pair | 0.78 | 9.82 | 13x |
+| benzene cluster | 1020 | pair + ATM | 39 | 147 | 4x |
+| liquid water | 1023 | pair | 6.31 | 43.6 | 7x |
+| liquid water | 1023 | pair + ATM | 1,505 | 6,756 | 4x |
+| MgO crystal | 512 | pair | 3.19 | 14 | 4x |
+| MgO crystal | 512 | pair + ATM | 817 | 5,651 | 7x |
+| liquid water | 4095 | pair | 19.6 | – | – |
+| liquid water | 4095 | pair + ATM | 3,729 | – | – |
+| MgO crystal | 4096 | pair | 25.5 | – | – |
+| MgO crystal | 4096 | pair + ATM | 6,682 | – | – |
 
-Pair-only evaluations are fast at every size. ATM at the default 40 bohr
-cutoff is FP64-bound. Consumer GPUs run FP64 at 1/64 of FP32 rate, so ATM
-dominates the cost for dense systems. Full tables, stage timings, the method
-used, and the remaining bottlenecks are in
+Against a 28-thread CPU run of the reference, the speedup is 3–14×. With
+ATM on, the three-body term takes over 98% of GPU time once a system passes
+about 1000 atoms (1.5 million triangles per atom in MgO). It is FP64-bound, and
+this consumer GPU runs FP64 at 1/64 of its FP32 rate. A data-centre GPU with
+full-rate FP64 should do much better, but none has been measured. Full
+tables, stage timings, the method, and the remaining bottlenecks are in
 [docs/performance.md](docs/performance.md).
 
 ## Documentation
