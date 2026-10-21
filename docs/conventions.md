@@ -23,6 +23,24 @@ zero-shift self site is excluded; other images of the same atom are kept.
 Only active periodic directions generate images, and every site within each
 cutoff is included regardless of how the input is wrapped.
 
+## Neighbour lists
+
+Each atom's row of the directed edge list `(i -> j, n)` is ordered by radius
+band, so the CN, pair, and ATM views are prefixes of one list sized for the
+largest cutoff plus the skin. Every kernel still applies its exact cutoff.
+Two builders produce the same edge set (checked against a CPU enumeration):
+
+- **Brute force** over all atoms and lattice images, for small systems.
+- **Cell lists** in the search basis (active lattice vectors completed with
+  orthonormal vectors). Bins hold wrapped fractional coordinates, and an
+  unbounded periodic stencil maps each bin offset to one (bin, image) pair, so
+  cutoffs larger than the cell yield every image exactly once. Image shifts are
+  stored relative to the raw input coordinates.
+
+The builder is chosen automatically by system size, or explicitly with
+`builder=`. Distinct sites closer than 1e-6 bohr are rejected as unphysical
+input.
+
 ## Terms
 
 | Quantity | Definition | Exclusion |

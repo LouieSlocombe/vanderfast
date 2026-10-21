@@ -24,6 +24,63 @@ using cuda::PinnedBuffer;
 namespace {
 
 constexpr int kSumColumns = 8;  // e_pair, e_atm, six virial components
+constexpr long long kBruteForceLimit = 1LL << 24;  // candidate pairs for the O(N^2) builder
+
+// Bin the search basis with bins of about half the largest radius, capped at
+// max(64, 4N) bins. The stencil reach is conservative for every direction.
+cuda::CellGrid make_grid(const Lattice& lattice, const double* x, std::size_t n, double rmax) {
+  cuda::CellGrid grid;
+  std::memcpy(grid.inverse, lattice.inverse.data(), sizeof(grid.inverse));
+  double lo[3] = {0.0, 0.0, 0.0};
+  double hi[3] = {0.0, 0.0, 0.0};
+  for (std::size_t i = 0; i < n; ++i) {
+    for (int k = 0; k < 3; ++k) {
+      const double s = x[3 * i] * grid.inverse[k] + x[3 * i + 1] * grid.inverse[3 + k] +
+                       x[3 * i + 2] * grid.inverse[6 + k];
+      lo[k] = i == 0 ? s : std::min(lo[k], s);
+      hi[k] = i == 0 ? s : std::max(hi[k], s);
+    }
+  }
+  const double width = rmax / 2.0;
+  double extent[3];
+  for (int k = 0; k < 3; ++k) {
+    grid.periodic[k] = lattice.pbc[static_cast<std::size_t>(k)] ? 1 : 0;
+    if (grid.periodic[k]) {
+      if (std::max(std::fabs(lo[k]), std::fabs(hi[k])) > 1.0e9) {
+        fail(ErrorCode::InvalidGeometry, "positions are too far outside the periodic cell");
+      }
+      extent[k] = lattice.spacing[static_cast<std::size_t>(k)];
+    } else {
+      extent[k] = hi[k] - lo[k];
+      grid.origin[k] = lo[k];
+    }
+    grid.nb[k] = extent[k] > 0.0 ? std::max(1, static_cast<int>(std::floor(extent[k] / width))) : 1;
+  }
+  const long long limit = std::max<long long>(64, 4 * static_cast<long long>(n));
+  while (grid.bins() > limit) {
+    int largest = 0;
+    for (int k = 1; k < 3; ++k) {
+      if (grid.nb[k] > grid.nb[largest]) largest = k;
+    }
+    grid.nb[largest] = std::max(1, grid.nb[largest] / 2);
+  }
+  for (int k = 0; k < 3; ++k) {
+    if (grid.periodic[k]) {
+      grid.scale[k] = grid.nb[k];
+      grid.reach[k] = static_cast<int>(std::floor(rmax * grid.nb[k] / extent[k])) + 1;
+    } else if (extent[k] > 0.0) {
+      grid.scale[k] = grid.nb[k] / extent[k];
+      grid.reach[k] = std::min(static_cast<int>(std::floor(rmax * grid.scale[k])) + 1, grid.nb[k] - 1);
+    } else {
+      grid.scale[k] = 0.0;
+      grid.reach[k] = 0;
+    }
+    if (grid.reach[k] > (1 << 20)) {
+      fail(ErrorCode::InvalidGeometry, "the cell is too thin for the cutoff");
+    }
+  }
+  return grid;
+}
 
 int checked_device(int device) {
   int count = 0;
@@ -172,8 +229,15 @@ struct D3Context::Impl {
       box.range[k] = range[static_cast<std::size_t>(k)];
       box.images = checked_mul<long long>(box.images, 2LL * box.range[k] + 1, "image count");
     }
-    checked_mul<long long>(box.images, static_cast<long long>(n), "candidate count");
-    const double min_r2 = graph.build_brute_force(g, box, bands);
+    const long long candidates = checked_mul<long long>(
+        checked_mul<long long>(box.images, static_cast<long long>(n), "candidate count"),
+        static_cast<long long>(n), "candidate count");
+    const bool brute = options.builder == NeighborBuilder::BruteForce ||
+                       (options.builder == NeighborBuilder::Auto && candidates <= kBruteForceLimit);
+    const double min_r2 = brute ? graph.build_brute_force(g, box, bands)
+                                : graph.build_cell_bins(g, make_grid(lattice, geometry.positions, n, rmax), bands);
+    last_builder = brute ? "brute_force" : "cell_bins";
+    result.info.builder = last_builder;
     stats.rebuilds += 1;
     if (options.reject_coincident && min_r2 < math::kCnExclusionR2) {
       fail(ErrorCode::CoincidentSites,
@@ -264,6 +328,7 @@ struct D3Context::Impl {
   }
 
   bool debug_derivatives = false;
+  const char* last_builder = "none";
   std::mutex mutex;
   bool poisoned = false;
   int device;

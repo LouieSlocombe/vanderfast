@@ -90,6 +90,7 @@ py::dict result_dict(const HostResult& result, std::size_t n) {
           : py::none();
   py::dict info;
   info["rebuilt"] = result.info.rebuilt;
+  info["builder"] = result.info.builder;
   info["cn_edges"] = result.info.cn_edges;
   info["pair_edges"] = result.info.pair_edges;
   info["atm_edges"] = result.info.atm_edges;

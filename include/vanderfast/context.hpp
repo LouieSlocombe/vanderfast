@@ -40,6 +40,7 @@ struct Geometry {
 
 struct EvalInfo {
   bool rebuilt = false;
+  std::string builder;
   std::int64_t cn_edges = 0;
   std::int64_t pair_edges = 0;
   std::int64_t atm_edges = 0;

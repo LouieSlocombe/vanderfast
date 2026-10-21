@@ -24,6 +24,19 @@ struct ImageBox {
   long long images = 1;  // product of (2 range + 1)
 };
 
+// Binning of the search basis for the cell-list builder. Active directions
+// use wrapped fractional coordinates; inactive directions use the projection
+// onto the orthonormal completion vectors (bohr).
+struct CellGrid {
+  double inverse[9] = {};  // search-basis inverse (row-vector convention)
+  double origin[3] = {0.0, 0.0, 0.0};
+  double scale[3] = {1.0, 1.0, 1.0};  // bins per unit of the coordinate
+  int nb[3] = {1, 1, 1};
+  int reach[3] = {0, 0, 0};
+  int periodic[3] = {0, 0, 0};
+  long long bins() const { return static_cast<long long>(nb[0]) * nb[1] * nb[2]; }
+};
+
 // Build bands from per-view radii (bohr); non-positive radii disable a view.
 BandSpec make_bands(const std::array<double, kViewCount>& radius);
 
@@ -35,6 +48,10 @@ class NeighborGraph {
   // Brute-force build over all atoms and images. Synchronises once to size
   // the edge array. Returns the minimum squared distance between distinct sites.
   double build_brute_force(const GeometryView& geometry, const ImageBox& box, const BandSpec& bands);
+
+  // Cell-list build: bins of wrapped fractional coordinates and an unbounded
+  // periodic stencil, so cutoffs larger than the cell yield every image once.
+  double build_cell_bins(const GeometryView& geometry, const CellGrid& grid, const BandSpec& bands);
 
   GraphView view() const noexcept;
   std::int64_t edges(View view) const noexcept { return view_edges_[view]; }
@@ -57,6 +74,17 @@ class NeighborGraph {
   DeviceBuffer<int> len_[kViewCount];
   DeviceBuffer<unsigned long long> scalars_;  // band totals[3], min r2 bits
   DeviceBuffer<unsigned char> scan_temp_;
+  DeviceBuffer<int> bin_key_;
+  DeviceBuffer<int> sorted_key_;
+  DeviceBuffer<int> atom_index_;
+  DeviceBuffer<int> sorted_atom_;
+  DeviceBuffer<int4> wrap_;
+  DeviceBuffer<int> bin_start_;
+  DeviceBuffer<unsigned char> sort_temp_;
+
+  void begin_build(const GeometryView& geometry, const BandSpec& bands);
+  double finish_build(const GeometryView& geometry, const BandSpec& bands);
+
   PinnedBuffer<unsigned long long> host_scalars_;
 };
 
