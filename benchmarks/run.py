@@ -58,7 +58,7 @@ import vanderfast
 from vanderfast.context import D3Context
 from vanderfast.parameters import D3BJParameters
 t1 = time.perf_counter()
-args = json.loads(sys.argv[1])
+args = json.load(sys.stdin)
 ctx = D3Context(np.array(args["numbers"]), D3BJParameters(**args["parameters"]), skin=args["skin"])
 t2 = time.perf_counter()
 ctx.evaluate(np.array(args["positions"]), cell=np.array(args["cell"]), pbc=args["pbc"],
@@ -199,10 +199,20 @@ def mode_cold(run: Run) -> dict[str, Any]:
         "cell": run.atoms.cell[:].tolist(),
         "pbc": [bool(p) for p in run.atoms.pbc],
     }
-    command = [sys.executable, "-c", COLD_SCRIPT, json.dumps(payload)]
-    output = subprocess.run(command, capture_output=True, text=True, check=True).stdout
+    command = [sys.executable, "-c", COLD_SCRIPT]
+    output = subprocess.run(
+        command, input=json.dumps(payload), capture_output=True, text=True, check=True
+    ).stdout
     result: dict[str, Any] = json.loads(output)
     return result
+
+
+def _run_mode(handler: Callable[[Run], dict[str, Any]], run: Run) -> dict[str, Any]:
+    """Run one mode, recording a failure in place of its timings."""
+    try:
+        return handler(run)
+    except Exception as error:  # noqa: BLE001
+        return {"status": f"error: {type(error).__name__}: {error}"}
 
 
 def run_case(
@@ -247,7 +257,10 @@ def run_case(
             handlers["warm-ase-efs"] = lambda r: mode_ase(r, stress=True)
         for mode in modes:
             if mode in handlers:
-                case.modes[mode.replace("-", "_")] = handlers[mode](run)
+                case.modes[mode.replace("-", "_")] = _run_mode(handlers[mode], run)
+        failed = [name for name, value in case.modes.items() if "status" in value]
+        if failed:
+            case.status = f"partial: {', '.join(failed)} failed"
         if len(atoms) <= reference_max_atoms:
             case.errors = reference_errors(atoms, parameters, ctx)
     except Exception as error:  # noqa: BLE001
