@@ -2,7 +2,7 @@
 PYTHON ?= python
 UPSTREAM ?=
 
-.PHONY: help env lock dev dev-cpu lint test test-gpu cpp-test sanitize stubtest wheel bench-smoke bench data data-check fixtures fixtures-check
+.PHONY: help env lock dev dev-cpu lint test test-gpu cpp-test sanitize stubtest wheel gpu-verify bench-smoke bench data data-check fixtures fixtures-check
 
 help:
 	@grep -E '^[a-z-]+:' Makefile | cut -d: -f1
@@ -54,9 +54,23 @@ stubtest:
 
 wheel:
 	VANDERFAST_RELEASE_BUILD=ON VANDERFAST_WERROR=ON \
-	VANDERFAST_CUDA_ARCHITECTURES="75-real;80-real;86-real;89-real;90-real;100-real;120-real;120-virtual" \
+	VANDERFAST_CUDA_ARCHITECTURES=release \
 	  $(PYTHON) -m build --wheel --no-isolation
 	$(PYTHON) tools/check_wheel.py dist/*.whl
+
+# The release workflow's gpu-verify job, locally: install dist/*.whl into a
+# fresh virtual environment with PyPI dependencies only, run the whole suite on
+# the GPU with a scrubbed environment, and write reports/gpu-<commit>.json.
+GPU_VENV ?= build/gpu-venv
+gpu-verify:
+	rm -rf $(GPU_VENV)
+	$(PYTHON) -m venv $(GPU_VENV)
+	$(GPU_VENV)/bin/python -m pip install --quiet dist/*.whl "dftd3==1.6.0" pytest pytest-cov
+	cd build && env -i HOME="$$HOME" PATH=/usr/bin:/bin $(CURDIR)/$(GPU_VENV)/bin/python -m pytest \
+	  $(CURDIR)/tests --rootdir $(CURDIR) --require-native --require-cuda --require-reference \
+	  --run-slow --no-cov -p no:cacheprovider --junitxml $(CURDIR)/build/gpu-junit.xml
+	env -i HOME="$$HOME" PATH=/usr/bin:/bin $(GPU_VENV)/bin/python tools/gpu_report.py record \
+	  --dist dist --junit build/gpu-junit.xml --output reports/gpu-$$(git rev-parse HEAD).json
 
 data:
 	$(PYTHON) -I tools/generate_d3_data.py $(UPSTREAM)

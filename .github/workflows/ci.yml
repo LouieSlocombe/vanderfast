@@ -123,7 +123,7 @@ jobs:
     env:
       VANDERFAST_RELEASE_BUILD: "ON"
       VANDERFAST_WERROR: "ON"
-      VANDERFAST_CUDA_ARCHITECTURES: "75-real;80-real;86-real;89-real;90-real;100-real;120-real;120-virtual"
+      VANDERFAST_CUDA_ARCHITECTURES: release
 
     steps:
       - name: Check out the repository

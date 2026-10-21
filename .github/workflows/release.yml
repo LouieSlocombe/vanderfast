@@ -1,9 +1,12 @@
 name: Release
 
-# Builds release artifacts when a GitHub release is published. Publishing to
-# PyPI (CUDA wheels via cibuildwheel, a GPU verification gate, and trusted
-# publishing) is added with the first complete release; until then this
-# workflow only validates the version and builds the sdist.
+# Builds the sdist and the CUDA wheel when a GitHub release is published, runs
+# the full GPU suite on exactly that wheel, and publishes both to PyPI with
+# trusted publishing only if the GPU report covers every wheel byte for byte.
+#
+# gpu-verify needs a self-hosted runner labelled `cuda` and the `gpu`
+# environment; publish needs the `pypi` environment and a PyPI trusted
+# publisher for this workflow. See docs/build.md ("Releasing").
 
 on:
   release:
@@ -53,10 +56,143 @@ jobs:
         run: |
           python -m build --sdist --no-isolation
           python tools/check_sdist.py dist/*.tar.gz
+          python -m twine check --strict dist/*.tar.gz
 
-      - name: Upload the distributions
+      - name: Upload the sdist
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: dist
+          name: dist-sdist
           path: dist/
           if-no-files-found: error
+
+  wheel:
+    name: Build the CUDA wheel (manylinux_2_28)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Configuration lives in [tool.cibuildwheel] in pyproject.toml: CUDA 13.1
+      # from NVIDIA's RHEL 8 repository, the release architecture list,
+      # auditwheel without libcuda, tools/check_wheel.py, and the no-GPU tests.
+      - name: Build, repair, check, and test the wheel
+        uses: pypa/cibuildwheel@8c2dcd2e96041a619f5ff03c9638d7941e2553a4 # v4.3.3
+        with:
+          output-dir: dist
+
+      - name: Upload the wheel
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-wheel
+          path: dist/
+          if-no-files-found: error
+
+  gpu-verify:
+    name: Test the exact artifacts on a GPU
+    needs: [sdist, wheel]
+    runs-on: [self-hosted, linux, x64, cuda]
+    environment: gpu
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Set up the locked conda environment
+        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+        with:
+          environment-file: build_tools/conda-linux-64.lock
+          environment-name: vanderfast-dev
+          cache-environment: false
+          cache-downloads: false
+
+      # A plain virtual environment with PyPI dependencies only: nothing from
+      # the conda environment (CUDA runtime, compilers) can leak into the test.
+      - name: Install the wheel into a fresh virtual environment
+        run: |
+          python -m venv --clear "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/venv/bin/python" -m pip install dist/*.whl "dftd3==1.6.0" pytest pytest-cov
+
+      - name: Run the full suite on the GPU
+        shell: bash {0}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          env -i HOME="$HOME" PATH=/usr/bin:/bin "$RUNNER_TEMP/venv/bin/python" -m pytest \
+            "$GITHUB_WORKSPACE/tests" --rootdir "$GITHUB_WORKSPACE" \
+            --require-native --require-cuda --require-reference --run-slow --no-cov \
+            -p no:cacheprovider --junitxml "$RUNNER_TEMP/junit.xml"
+
+      - name: Record the GPU report
+        shell: bash {0}
+        run: |
+          set -euo pipefail
+          env -i HOME="$HOME" PATH=/usr/bin:/bin GITHUB_SHA="$GITHUB_SHA" \
+            "$RUNNER_TEMP/venv/bin/python" tools/gpu_report.py record --dist dist --junit "$RUNNER_TEMP/junit.xml" \
+            --output "reports/gpu-${GITHUB_SHA}.json"
+
+      - name: Upload the GPU report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gpu-report
+          path: reports/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: [sdist, wheel, gpu-verify]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/vanderfast/
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download the distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download the GPU report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gpu-report
+          path: reports
+
+      - name: Check out the report verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/gpu_report.py
+          sparse-checkout-cone-mode: false
+          path: source
+
+      - name: Verify the GPU report covers every wheel
+        run: python3 source/tools/gpu_report.py verify --dist dist reports/gpu-*.json
+
+      - name: Publish with trusted publishing and attestations
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/

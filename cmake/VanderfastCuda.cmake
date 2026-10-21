@@ -23,6 +23,14 @@ set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_EXTENSIONS OFF)
 
+# "release" names the architecture list every published wheel carries: SASS for
+# each supported generation plus PTX for the newest, so later GPUs can JIT.
+set(VANDERFAST_RELEASE_CUDA_ARCHITECTURES
+  "75-real;80-real;86-real;89-real;90-real;100-real;120-real;120-virtual")
+if(VANDERFAST_CUDA_ARCHITECTURES STREQUAL "release")
+  set(VANDERFAST_CUDA_ARCHITECTURES "${VANDERFAST_RELEASE_CUDA_ARCHITECTURES}")
+endif()
+
 if(VANDERFAST_RELEASE_BUILD AND VANDERFAST_CUDA_ARCHITECTURES MATCHES "^(native|all|all-major)$")
   message(FATAL_ERROR
     "Release builds need an explicit CUDA architecture list, not '${VANDERFAST_CUDA_ARCHITECTURES}'.")

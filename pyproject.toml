@@ -96,6 +96,46 @@ VANDERFAST_RELEASE_BUILD = { env = "VANDERFAST_RELEASE_BUILD", default = "OFF" }
 VANDERFAST_WERROR = { env = "VANDERFAST_WERROR", default = "OFF" }
 VANDERFAST_BUILD_TESTS = "OFF"
 
+[tool.cibuildwheel]
+# One CPython, one platform: the CUDA wheel targets manylinux_2_28 x86_64.
+build = "cp314-manylinux_x86_64"
+manylinux-x86_64-image = "manylinux_2_28"
+build-verbosity = 1
+test-groups = ["test"]
+# Everything that needs no GPU; the release workflow's gpu-verify job runs the
+# CUDA suite on the same wheel.
+test-command = [
+  "vanderfast verify-data",
+  "vanderfast info",
+  "python -m pytest {project}/tests/unit {project}/tests/cuda --rootdir {project} -m 'not cuda' --require-native --no-cov -p no:cacheprovider",
+]
+inherit.audit-requires = "append"
+inherit.audit-command = "append"
+audit-requires = ["twine"]
+audit-command = "twine check --strict {wheel}"
+
+[tool.cibuildwheel.linux]
+# The same CUDA 13.1 nvcc and runtime as the conda lock (build_tools/), from
+# NVIDIA's signed RHEL 8 repository.
+before-all = [
+  "dnf install -y dnf-plugins-core",
+  "dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo",
+  "dnf install -y cuda-nvcc-13-1-13.1.115 cuda-cudart-devel-13-1-13.1.80 cuda-cuobjdump-13-1-13.1.115",
+]
+# libcuda.so.1 comes from the driver and is loaded at run time by the static
+# CUDA runtime; the wheel must never vendor it.
+repair-wheel-command = [
+  "auditwheel repair --exclude libcuda.so.1 -w {dest_dir} {wheel}",
+  "python {project}/tools/check_wheel.py {dest_dir}/*.whl",
+]
+
+[tool.cibuildwheel.linux.environment]
+PATH = "/usr/local/cuda-13.1/bin:$PATH"
+CUDACXX = "/usr/local/cuda-13.1/bin/nvcc"
+VANDERFAST_RELEASE_BUILD = "ON"
+VANDERFAST_WERROR = "ON"
+VANDERFAST_CUDA_ARCHITECTURES = "release"
+
 [tool.pytest]
 minversion = "9.1"
 addopts = ["-ra", "--import-mode=importlib", "--cov", "--cov-report=term-missing"]
