@@ -383,6 +383,10 @@ class D3Context:
         self.native.set_parameters(**self._parameter_kwargs())
         self.native.invalidate_neighbors()
 
+    def invalidate_neighbors(self) -> None:
+        """Force a neighbour-list rebuild on the next evaluation."""
+        self.native.invalidate_neighbors()
+
     def diagnostics(self) -> dict[str, Any]:
         """Return the resolved configuration and runtime counters."""
         return {

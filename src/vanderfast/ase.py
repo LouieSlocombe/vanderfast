@@ -24,7 +24,7 @@ from vanderfast.parameters import Cutoffs, D3BJParameters, resolve_parameters
 from vanderfast.reference import ReferenceEvaluator
 
 _PARAMETER_KEYS: Final = frozenset({"method", "damping", "atm", "d3_parameters"})
-_CONTEXT_KEYS: Final = frozenset({"backend", "device", "precision", "cutoff", "skin"})
+_CONTEXT_KEYS: Final = frozenset({"backend", "device", "precision", "skin"})
 _IGNORED_CHANGES: Final = frozenset({"initial_charges", "initial_magmoms"})
 _BACKENDS: Final = ("cuda", "reference")
 
@@ -76,6 +76,7 @@ class D3Calculator(Calculator):
     ) -> None:
         """Resolve the configuration; the CUDA context is created on first use."""
         self._context: D3Context | None = None
+        self.evaluations = 0
         self._resolved: D3BJParameters | None = None
         self._cutoffs = Cutoffs()
         Calculator.__init__(
@@ -116,8 +117,11 @@ class D3Calculator(Calculator):
         keys = set(changed)
         if keys & _CONTEXT_KEYS:
             self._context = None
-        elif keys & _PARAMETER_KEYS and self._context is not None:
-            self._context.set_parameters(self._resolved)
+        elif self._context is not None:
+            if keys & _PARAMETER_KEYS:
+                self._context.set_parameters(self._resolved)
+            if "cutoff" in keys:
+                self._context.set_cutoffs(self._cutoffs)
         Calculator.reset(self)
         return changed
 
@@ -155,6 +159,7 @@ class D3Calculator(Calculator):
     ) -> None:
         """Evaluate the requested properties and store them in ``results``."""
         Calculator.calculate(self, atoms, properties, system_changes)
+        self.evaluations += 1
         atoms = cast("Atoms", self.atoms)
         pbc = np.array(atoms.pbc, dtype=np.bool_)
         want_stress = "stress" in properties

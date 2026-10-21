@@ -310,6 +310,17 @@ PYBIND11_MODULE(_native, m) {
           py::arg("positions"), py::arg("cell"), py::arg("pbc"), py::kw_only(),
           py::arg("derivatives") = true)
       .def("invalidate_neighbors", &D3Context::invalidate_neighbors)
+      .def(
+          "_testing_set_allocation_limit",
+          [](D3Context& context, std::size_t bytes) { context.testing_set_allocation_limit(bytes); },
+          py::arg("bytes"))
+      .def(
+          "_testing_hold",
+          [](D3Context& context, double seconds) {
+            py::gil_scoped_release release;
+            context.testing_hold(seconds);
+          },
+          py::arg("seconds"))
       .def_property_readonly("n_atoms", &D3Context::n_atoms)
       .def("stats", [](const D3Context& context) {
         const ContextStats s = context.stats();

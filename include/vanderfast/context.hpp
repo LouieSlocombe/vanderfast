@@ -118,6 +118,11 @@ class D3Context {
   const ContextOptions& options() const noexcept;
   ContextStats stats() const;
 
+  // Testing hooks (not part of the stable API): cap this context's device
+  // allocations, and hold the evaluation lock for ``seconds``.
+  void testing_set_allocation_limit(std::size_t bytes);
+  void testing_hold(double seconds);
+
   static int device_count() noexcept;
   static std::vector<DeviceInfo> devices();
 

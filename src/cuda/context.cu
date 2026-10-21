@@ -1,6 +1,8 @@
 // D3Context: device resources, persistent state, and the evaluation pipeline.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <thread>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -98,6 +100,32 @@ int checked_device(int device) {
 }
 
 }  // namespace
+
+// Optional CUDA-event timings of the pipeline stages (stream time between marks).
+class StageTimer {
+ public:
+  StageTimer(bool enabled, cudaStream_t stream, std::vector<cuda::Event>& pool)
+      : enabled_(enabled), stream_(stream), pool_(pool) {}
+  void mark(const char* name) {
+    if (!enabled_) return;
+    if (pool_.size() <= names_.size()) pool_.push_back(cuda::Event::create());
+    pool_[names_.size()].record(stream_);
+    names_.push_back(name);
+  }
+  void collect(std::map<std::string, double>& out) const {
+    for (std::size_t k = 1; k < names_.size(); ++k) {
+      float ms = 0.0f;
+      VF_CUDA_CHECK(cudaEventElapsedTime(&ms, pool_[k - 1].get(), pool_[k].get()));
+      out[names_[k]] = static_cast<double>(ms);
+    }
+  }
+
+ private:
+  bool enabled_;
+  cudaStream_t stream_;
+  std::vector<cuda::Event>& pool_;
+  std::vector<const char*> names_;
+};
 
 struct D3Context::Impl {
   Impl(const std::int32_t* numbers_in, std::size_t n, const D3Parameters& params,
@@ -204,6 +232,8 @@ struct D3Context::Impl {
     DeviceGuard guard(device);
     cudaStream_t s = stream.get();
 
+    StageTimer timer(options.collect_timings, s, events);
+    timer.mark("start");
     // K0: upload and pack the geometry.
     staging.reserve(3 * n);
     std::memcpy(staging.data(), geometry.positions, 3 * n * sizeof(double));
@@ -213,11 +243,108 @@ struct D3Context::Impl {
                                 static_cast<std::int32_t>(n), packed.data(), s);
     const cuda::GeometryView g = geometry_view(lattice);
 
-    // Neighbour graph (rebuilt on every call until skin reuse is enabled).
+    // Neighbour graph: reuse while every atom stays within half the skin of
+    // its position at the last build (and nothing else relevant changed).
     const std::array<double, cuda::kViewCount> radius{
         parameters.cutoffs.cn + options.skin,
         parameters.pair_active() ? parameters.cutoffs.disp2 + options.skin : 0.0,
         parameters.atm_active() ? parameters.cutoffs.disp3 + options.skin : 0.0};
+    timer.mark("upload");
+    if (needs_rebuild(geometry, lattice, radius)) {
+      build_graph(geometry, lattice, g, radius, result.info);
+    } else {
+      result.info.builder = last_builder;
+    }
+    result.info.cn_edges = graph.edges(cuda::kViewCn);
+    result.info.pair_edges = graph.edges(cuda::kViewPair);
+    result.info.atm_edges = graph.edges(cuda::kViewAtm);
+    const cuda::GraphView gv = graph.view();
+    const cuda::ModelView mv = model.view(parameters);
+
+
+    timer.mark("neighbors");
+    // K0b: reset every accumulator of this evaluation in one call.
+    arena.resize(12 * n);
+    arena.zero_async();
+    const cuda::AccumView accum = accum_view();
+
+    // K1, K2: coordination numbers and reference weights.
+    cn.resize(n);
+    weights.resize(cuda::kRefPad * n);
+    dweights.resize(cuda::kRefPad * n);
+    cuda::launch_cn(g, mv, gv, cn.data(), s);
+    cuda::launch_weights(mv, g, cn.data(), weights.data(), derivatives ? dweights.data() : nullptr, s);
+
+    timer.mark("cn_weights");
+    // K3: pair term.
+    if (parameters.pair_active()) {
+      cuda::launch_pair(g, mv, gv, weights.data(), derivatives ? dweights.data() : nullptr, accum, s);
+    }
+    timer.mark("pair");
+    // K4: ATM triangles in bounded launches.
+    if (parameters.atm_active()) run_atm(g, mv, gv, derivatives, accum, result.info);
+    if (debug != nullptr) download_debug(*debug, derivatives, accum);
+    timer.mark("atm");
+    // K5: CN-mediated derivatives.
+    if (derivatives) cuda::launch_cn_reverse(g, mv, gv, accum, s);
+
+    timer.mark("cn_reverse");
+    // K6: reductions and transfers.
+    cuda::launch_column_sums(accum.e_pair, kSumColumns, n, n, partials.data(), sums.data(), s);
+    sums.download_async(host_sums.data(), kSumColumns);
+    if (want_gradient) {
+      host_gradient.reserve(3 * n);
+      cuda::copy_to_host_async(accum.grad, host_gradient.data(), 3 * n, s);
+    }
+    if (want_atoms) {
+      host_atoms.reserve(2 * n);
+      cuda::copy_to_host_async(accum.e_pair, host_atoms.data(), 2 * n, s);
+    }
+    timer.mark("reduce");
+    stream.synchronize();
+    timer.collect(result.info.stage_ms);
+
+    result.energy_pair = host_sums.data()[0];
+    result.energy_atm = host_sums.data()[1];
+    result.energy = result.energy_pair + result.energy_atm;
+    if (want_virial) {
+      const double* v = host_sums.data() + 2;
+      result.virial = {v[0], v[5], v[4], v[5], v[1], v[3], v[4], v[3], v[2]};
+    }
+    if (want_gradient) std::memcpy(result.gradient.data(), host_gradient.data(), 3 * n * sizeof(double));
+    if (want_atoms) {
+      for (std::size_t i = 0; i < n; ++i) result.atom_energies[i] = host_atoms.data()[i] + host_atoms.data()[n + i];
+    }
+    return result;
+  }
+
+  bool needs_rebuild(const Geometry& geometry, const Lattice& lattice,
+                     const std::array<double, cuda::kViewCount>& radius) const {
+    if (!graph_valid || graph_cell != geometry.cell || graph_pbc != geometry.pbc ||
+        graph_radius != radius || !(options.skin > 0.0)) {
+      return true;
+    }
+    for (int k = 0; k < 3; ++k) {
+      // A lattice-vector wrap of an atom must exceed the skin to be detected.
+      if (geometry.pbc[static_cast<std::size_t>(k)] &&
+          options.skin >= 2.0 * lattice.spacing[static_cast<std::size_t>(k)]) {
+        return true;
+      }
+    }
+    double max_d2 = 0.0;
+    for (std::size_t i = 0; i < 3 * geometry.n_atoms; i += 3) {
+      const double dx = geometry.positions[i] - graph_positions[i];
+      const double dy = geometry.positions[i + 1] - graph_positions[i + 1];
+      const double dz = geometry.positions[i + 2] - graph_positions[i + 2];
+      max_d2 = std::max(max_d2, dx * dx + dy * dy + dz * dz);
+    }
+    return 4.0 * max_d2 >= options.skin * options.skin;
+  }
+
+  void build_graph(const Geometry& geometry, const Lattice& lattice, const cuda::GeometryView& g,
+                   const std::array<double, cuda::kViewCount>& radius, EvalInfo& info) {
+    const std::size_t n = numbers.size();
+    graph_valid = false;
     const cuda::BandSpec bands = cuda::make_bands(radius);
     const double rmax = std::max({radius[0], radius[1], radius[2]});
     cuda::ImageBox box;
@@ -232,69 +359,22 @@ struct D3Context::Impl {
         static_cast<long long>(n), "candidate count");
     const bool brute = options.builder == NeighborBuilder::BruteForce ||
                        (options.builder == NeighborBuilder::Auto && candidates <= kBruteForceLimit);
-    const double min_r2 = brute ? graph.build_brute_force(g, box, bands)
-                                : graph.build_cell_bins(g, make_grid(lattice, geometry.positions, n, rmax), bands);
+    const double min_r2 =
+        brute ? graph.build_brute_force(g, box, bands)
+              : graph.build_cell_bins(g, make_grid(lattice, geometry.positions, n, rmax), bands);
     last_builder = brute ? "brute_force" : "cell_bins";
-    result.info.builder = last_builder;
     stats.rebuilds += 1;
     if (options.reject_coincident && min_r2 < math::kCnExclusionR2) {
       fail(ErrorCode::CoincidentSites,
            "two distinct lattice sites are closer than 1e-6 bohr; the input geometry is unphysical");
     }
-    result.info.rebuilt = true;
-    result.info.cn_edges = graph.edges(cuda::kViewCn);
-    result.info.pair_edges = graph.edges(cuda::kViewPair);
-    result.info.atm_edges = graph.edges(cuda::kViewAtm);
-    const cuda::GraphView gv = graph.view();
-    const cuda::ModelView mv = model.view(parameters);
-
-    // K0b: reset every accumulator of this evaluation in one call.
-    arena.resize(12 * n);
-    arena.zero_async();
-    const cuda::AccumView accum = accum_view();
-
-    // K1, K2: coordination numbers and reference weights.
-    cn.resize(n);
-    weights.resize(cuda::kRefPad * n);
-    dweights.resize(cuda::kRefPad * n);
-    cuda::launch_cn(g, mv, gv, cn.data(), s);
-    cuda::launch_weights(mv, g, cn.data(), weights.data(), derivatives ? dweights.data() : nullptr, s);
-
-    // K3: pair term.
-    if (parameters.pair_active()) {
-      cuda::launch_pair(g, mv, gv, weights.data(), derivatives ? dweights.data() : nullptr, accum, s);
-    }
-    // K4: ATM triangles in bounded launches.
-    if (parameters.atm_active()) run_atm(g, mv, gv, derivatives, accum, result.info);
-    if (debug != nullptr) download_debug(*debug, derivatives, accum);
-    // K5: CN-mediated derivatives.
-    if (derivatives) cuda::launch_cn_reverse(g, mv, gv, accum, s);
-
-    // K6: reductions and transfers.
-    cuda::launch_column_sums(accum.e_pair, kSumColumns, n, n, partials.data(), sums.data(), s);
-    sums.download_async(host_sums.data(), kSumColumns);
-    if (want_gradient) {
-      host_gradient.reserve(3 * n);
-      cuda::copy_to_host_async(accum.grad, host_gradient.data(), 3 * n, s);
-    }
-    if (want_atoms) {
-      host_atoms.reserve(2 * n);
-      cuda::copy_to_host_async(accum.e_pair, host_atoms.data(), 2 * n, s);
-    }
-    stream.synchronize();
-
-    result.energy_pair = host_sums.data()[0];
-    result.energy_atm = host_sums.data()[1];
-    result.energy = result.energy_pair + result.energy_atm;
-    if (want_virial) {
-      const double* v = host_sums.data() + 2;
-      result.virial = {v[0], v[5], v[4], v[5], v[1], v[3], v[4], v[3], v[2]};
-    }
-    if (want_gradient) std::memcpy(result.gradient.data(), host_gradient.data(), 3 * n * sizeof(double));
-    if (want_atoms) {
-      for (std::size_t i = 0; i < n; ++i) result.atom_energies[i] = host_atoms.data()[i] + host_atoms.data()[n + i];
-    }
-    return result;
+    graph_positions.assign(geometry.positions, geometry.positions + 3 * n);
+    graph_cell = geometry.cell;
+    graph_pbc = geometry.pbc;
+    graph_radius = radius;
+    graph_valid = true;
+    info.rebuilt = true;
+    info.builder = last_builder;
   }
 
   void run_atm(const cuda::GeometryView& g, const cuda::ModelView& mv, const cuda::GraphView& gv,
@@ -358,6 +438,12 @@ struct D3Context::Impl {
   }
 
   bool debug_derivatives = false;
+  std::vector<cuda::Event> events;
+  bool graph_valid = false;
+  std::vector<double> graph_positions;
+  std::array<double, 9> graph_cell{};
+  std::array<bool, 3> graph_pbc{};
+  std::array<double, cuda::kViewCount> graph_radius{};
   const char* last_builder = "none";
   std::mutex mutex;
   bool poisoned = false;
@@ -410,6 +496,7 @@ HostResult D3Context::evaluate(const Geometry& geometry, unsigned properties) {
   try {
     return impl_->run(geometry, properties, nullptr);
   } catch (const Error& error) {
+    impl_->graph_valid = false;
     if (error.code() == ErrorCode::CudaRuntime) impl_->poisoned = true;
     throw;
   }
@@ -424,6 +511,7 @@ DebugResult D3Context::debug(const Geometry& geometry, bool derivatives) {
   try {
     impl_->run(geometry, derivatives ? kEnergy | kGradient : kEnergy, &debug);
   } catch (const Error& error) {
+    impl_->graph_valid = false;
     if (error.code() == ErrorCode::CudaRuntime) impl_->poisoned = true;
     throw;
   }
@@ -440,7 +528,7 @@ void D3Context::set_parameters(const D3Parameters& parameters) {
   impl_->stream.synchronize();
 }
 
-void D3Context::invalidate_neighbors() noexcept {}
+void D3Context::invalidate_neighbors() noexcept { impl_->graph_valid = false; }
 
 std::size_t D3Context::n_atoms() const noexcept { return impl_->numbers.size(); }
 const D3Parameters& D3Context::parameters() const noexcept { return impl_->parameters; }
@@ -450,7 +538,16 @@ ContextStats D3Context::stats() const {
   ContextStats stats = impl_->stats;
   stats.allocations = impl_->counters.allocations;
   stats.device_bytes = impl_->counters.device_bytes;
+  stats.capacity_edges = impl_->graph.capacity();
   return stats;
+}
+
+void D3Context::testing_set_allocation_limit(std::size_t bytes) { impl_->counters.limit = bytes; }
+
+void D3Context::testing_hold(double seconds) {
+  std::unique_lock<std::mutex> lock(impl_->mutex, std::try_to_lock);
+  if (!lock.owns_lock()) fail(ErrorCode::ContextBusy, "this context is busy");
+  std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
 }
 
 int D3Context::device_count() noexcept {

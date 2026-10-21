@@ -115,6 +115,7 @@ class MemoryPool {
 struct AllocationCounters {
   std::int64_t allocations = 0;
   std::size_t device_bytes = 0;
+  std::size_t limit = std::numeric_limits<std::size_t>::max();  // testing hook
 };
 
 // Move-only device array with stream-ordered allocation from a context pool.
@@ -141,6 +142,9 @@ class DeviceBuffer {
     std::size_t target = count > grown ? count : grown;
     std::size_t bytes = checked_mul(target, sizeof(T), "device buffer size");
     bytes = checked_add(bytes, std::size_t{255}, "device buffer size") & ~std::size_t{255};
+    if (counters_ != nullptr && counters_->device_bytes - capacity_ * sizeof(T) + bytes > counters_->limit) {
+      throw Error(ErrorCode::OutOfDeviceMemory, "device allocation exceeds the configured limit");
+    }
     release();
     void* pointer = nullptr;
     VF_CUDA_CHECK(cudaMallocFromPoolAsync(&pointer, bytes, pool_, stream_));

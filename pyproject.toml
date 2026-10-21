@@ -208,7 +208,7 @@ max-args = 12
 max-positional-args = 6
 
 [tool.mypy]
-files = ["src", "tests", "tools"]
+files = ["src", "tests", "tools", "benchmarks"]
 mypy_path = "tests"
 python_version = "3.14"
 strict = true
