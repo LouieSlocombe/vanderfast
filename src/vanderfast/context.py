@@ -50,6 +50,15 @@ class NativeContext(Protocol):
 
     def set_parameters(self, **kwargs: float) -> None: ...  # noqa: D102
 
+    def debug(  # noqa: D102
+        self,
+        positions: FloatArray,
+        cell: FloatArray,
+        pbc: tuple[bool, bool, bool],
+        *,
+        derivatives: bool = True,
+    ) -> dict[str, Any]: ...
+
     def invalidate_neighbors(self) -> None: ...  # noqa: D102
 
     def stats(self) -> dict[str, Any]: ...  # noqa: D102
@@ -340,6 +349,25 @@ class D3Context:
             stress=stress,
             info=raw.info,
         )
+
+    def debug_atomic(
+        self,
+        positions: npt.ArrayLike,
+        *,
+        cell: npt.ArrayLike | None = None,
+        pbc: npt.ArrayLike = (False, False, False),
+        derivatives: bool = True,
+    ) -> dict[str, Any]:
+        """Return intermediates for development and testing (bohr).
+
+        The mapping holds ``cn``, ``weights`` and ``dweights`` (N x 8, zero
+        padded), ``dEdcn`` (before the CN reverse pass), and the directed
+        edges ``edge_i``, ``edge_j``, ``edge_shift`` of the largest view.
+        """
+        flags = _validate_pbc(pbc)
+        h = _validate_cell(cell, flags)
+        x = _validate_positions(positions, self.n_atoms)
+        return self.native.debug(x, h, flags, derivatives=derivatives)
 
     def set_parameters(self, parameters: D3BJParameters) -> None:
         """Replace the damping parameters, keeping the neighbour state."""

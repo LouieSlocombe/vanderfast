@@ -30,6 +30,22 @@ Evaluator = Callable[
 ]
 
 
+def cuda_evaluator(
+    numbers: npt.ArrayLike,
+    positions: FloatArray,
+    cell: FloatArray | None,
+    pbc: npt.ArrayLike,
+    parameters: D3BJParameters,
+    cutoffs: Cutoffs,
+) -> Evaluation:
+    """Evaluate with the CUDA backend through the native extension."""
+    from support import native_helpers  # noqa: PLC0415
+
+    ctx = native_helpers.context(numbers, parameters, cutoffs)
+    result = native_helpers.run(ctx, positions, cell, pbc)
+    return Evaluation(result["energy"], result["gradient"], result["virial"])
+
+
 def oracle_evaluator(
     numbers: npt.ArrayLike,
     positions: FloatArray,

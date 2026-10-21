@@ -73,6 +73,7 @@ add_library(vanderfast_host STATIC
   src/core/reference_data.cpp
   src/core/parameters.cpp
   src/core/lattice.cpp
+  src/core/neighbor_cpu.cpp
   src/core/build_metadata.cpp
   "${VANDERFAST_GENERATED}/embedded_reference.cpp")
 target_include_directories(vanderfast_host
@@ -85,7 +86,11 @@ if(VANDERFAST_ENABLE_CUDA)
   add_library(vanderfast_cuda STATIC
     src/cuda/cuda_check.cu
     src/cuda/device_model.cu
+    src/cuda/neighbor.cu
     src/cuda/k_geometry.cu
+    src/cuda/k_cn.cu
+    src/cuda/k_weights.cu
+    src/cuda/k_pair.cu
     src/cuda/k_reduce.cu
     src/cuda/context.cu)
   target_include_directories(vanderfast_cuda PRIVATE "${PROJECT_SOURCE_DIR}/src")

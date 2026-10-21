@@ -183,6 +183,17 @@ def test_replacement_reference_data_is_validated_and_identified(tmp_path: Path) 
         D3Context([1, 8], PBE_ATM, reference_data=path)
 
 
+def test_debug_intermediates() -> None:
+    atoms = structures.water_dimer()
+    context = D3Context(atoms.numbers, PBE_ATM, skin=0.0)
+    debug = context.debug_atomic(atoms.positions * INV_BOHR)
+    assert debug["weights"].shape == (6, 8)
+    assert debug["dEdcn"].shape == (6,)
+    assert len(debug["edge_i"]) == 30
+    energy_only = context.debug_atomic(atoms.positions * INV_BOHR, derivatives=False)
+    assert energy_only["dweights"] is None
+
+
 def test_convenience_evaluate_and_empty_systems() -> None:
     result = evaluate(np.zeros(0, dtype=int), np.zeros((0, 3)), PBE_ATM, properties=("forces",))
     assert result.energy == 0.0

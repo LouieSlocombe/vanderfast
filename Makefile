@@ -2,7 +2,7 @@
 PYTHON ?= python
 UPSTREAM ?=
 
-.PHONY: help env lock dev dev-cpu lint test test-gpu cpp-test stubtest wheel data data-check fixtures fixtures-check
+.PHONY: help env lock dev dev-cpu lint test test-gpu cpp-test sanitize stubtest wheel data data-check fixtures fixtures-check
 
 help:
 	@grep -E '^[a-z-]+:' Makefile | cut -d: -f1
@@ -35,6 +35,13 @@ cpp-test:
 	  -DCMAKE_BUILD_TYPE=RelWithDebInfo
 	cmake --build build/cpp
 	ctest --test-dir build/cpp --output-on-failure
+
+SANITIZER ?= compute-sanitizer
+sanitize:
+	$(SANITIZER) --tool memcheck --leak-check full --error-exitcode 99 $(PYTHON) tools/sanitizer_workload.py
+	$(SANITIZER) --tool racecheck --error-exitcode 99 $(PYTHON) tools/sanitizer_workload.py
+	$(SANITIZER) --tool synccheck --error-exitcode 99 $(PYTHON) tools/sanitizer_workload.py
+	$(SANITIZER) --tool initcheck --error-exitcode 99 $(PYTHON) tools/sanitizer_workload.py
 
 stubtest:
 	cd /tmp && $(PYTHON) -m mypy.stubtest vanderfast._native --allowlist $(CURDIR)/tests/stubtest_allowlist.txt

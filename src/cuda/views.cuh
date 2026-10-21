@@ -46,6 +46,7 @@ struct GraphView {
   const long long* row_ptr;  // [N + 1]
   const int4* edges;         // {j, n0, n1, n2}
   const int* len_cn;         // [N] row prefix length of the CN view
+  const int* len_pair;       // [N] row prefix length of the pair view
   const int* len_atm;        // [N] row prefix length of the ATM view
 };
 

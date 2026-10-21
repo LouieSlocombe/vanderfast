@@ -14,7 +14,7 @@ from vanderfast.errors import CudaUnavailableError, InputError, ParameterError
 
 pytestmark = pytest.mark.native
 
-PBE_ATM = resolve_parameters(method="pbe", damping="bj", atm=True)
+PBE = resolve_parameters(method="pbe", damping="bj", atm=False)
 
 
 @pytest.fixture
@@ -28,7 +28,7 @@ def _kwargs(**overrides: float) -> dict[str, float]:
         "s8": 0.7875,
         "a1": 0.4289,
         "a2": 4.4407,
-        "s9": 1.0,
+        "s9": 0.0,
         "alp": 14.0,
         "cutoff_cn": 40.0,
         "cutoff_disp2": 60.0,
@@ -146,7 +146,7 @@ def test_replacement_tables_are_validated(native: Any) -> None:
 
 @pytest.mark.cuda
 def test_python_context_drives_the_native_backend() -> None:
-    context = D3Context([18], PBE_ATM)
+    context = D3Context([18], PBE)
     result = context.evaluate([[0.0, 0.0, 0.0]], properties=("forces",))
     assert result.energy == 0.0
     assert context.diagnostics()["stats"]["evaluations"] == 1

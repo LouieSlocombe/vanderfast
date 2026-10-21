@@ -7,7 +7,9 @@
 #include <string>
 
 #include "../core/lattice.hpp"
+#include "../common/d3_math.hpp"
 #include "device_model.cuh"
+#include "neighbor.cuh"
 #include "kernels.cuh"
 #include "resources.cuh"
 #include "vanderfast/context.hpp"
@@ -74,6 +76,10 @@ struct D3Context::Impl {
       using Buffer = std::decay_t<decltype(buffer)>;
       buffer = Buffer(pool.get(), stream.get(), &counters);
     };
+    graph = cuda::NeighborGraph(pool.get(), stream.get(), &counters);
+    make(cn);
+    make(weights);
+    make(dweights);
     make(species_dev);
     make(positions_dev);
     make(packed);
@@ -107,21 +113,35 @@ struct D3Context::Impl {
     return view;
   }
 
-  HostResult evaluate(const Geometry& geometry, unsigned properties) {
+  cuda::GeometryView geometry_view(const Lattice& lattice) const {
+    cuda::GeometryView view{};
+    view.n = static_cast<std::int32_t>(numbers.size());
+    view.pos = packed.data();
+    std::memcpy(view.cell, lattice.cell.data(), sizeof(view.cell));
+    return view;
+  }
+
+  // Run the pipeline. With ``debug`` non-null, intermediates are downloaded.
+  HostResult run(const Geometry& geometry, unsigned properties, DebugResult* debug) {
     if (geometry.n_atoms != numbers.size()) {
       fail(ErrorCode::InvalidArgument, "expected " + std::to_string(numbers.size()) +
                                            " positions, got " + std::to_string(geometry.n_atoms));
     }
-    make_lattice(geometry);
+    const Lattice lattice = make_lattice(geometry);
+    if (parameters.atm_active()) {
+      fail(ErrorCode::UnsupportedFeature,
+           "the ATM three-body term is not implemented in this development build");
+    }
     const bool want_gradient = (properties & kGradient) != 0;
     const bool want_virial = (properties & kVirial) != 0;
     const bool want_atoms = (properties & kAtomEnergies) != 0;
+    const bool derivatives = want_gradient || want_virial || (debug != nullptr && debug_derivatives);
     HostResult result;
     const std::size_t n = numbers.size();
     result.has_gradient = want_gradient;
     result.has_virial = want_virial;
-    if (want_gradient) result.gradient.assign(3 * n, 0.0);
     result.has_atom_energies = want_atoms;
+    if (want_gradient) result.gradient.assign(3 * n, 0.0);
     if (want_atoms) result.atom_energies.assign(n, 0.0);
     stats.evaluations += 1;
     if (n == 0) return result;
@@ -136,13 +156,57 @@ struct D3Context::Impl {
     packed.resize(n);
     cuda::launch_pack_positions(positions_dev.data(), species_dev.data(),
                                 static_cast<std::int32_t>(n), packed.data(), s);
+    const cuda::GeometryView g = geometry_view(lattice);
+
+    // Neighbour graph (rebuilt on every call until skin reuse is enabled).
+    const std::array<double, cuda::kViewCount> radius{
+        parameters.cutoffs.cn + options.skin,
+        parameters.pair_active() ? parameters.cutoffs.disp2 + options.skin : 0.0,
+        parameters.atm_active() ? parameters.cutoffs.disp3 + options.skin : 0.0};
+    const cuda::BandSpec bands = cuda::make_bands(radius);
+    const double rmax = std::max({radius[0], radius[1], radius[2]});
+    cuda::ImageBox box;
+    const std::array<int, 3> range = image_ranges(lattice, geometry.positions, n, rmax);
+    box.images = 1;
+    for (int k = 0; k < 3; ++k) {
+      box.range[k] = range[static_cast<std::size_t>(k)];
+      box.images = checked_mul<long long>(box.images, 2LL * box.range[k] + 1, "image count");
+    }
+    checked_mul<long long>(box.images, static_cast<long long>(n), "candidate count");
+    const double min_r2 = graph.build_brute_force(g, box, bands);
+    stats.rebuilds += 1;
+    if (options.reject_coincident && min_r2 < math::kCnExclusionR2) {
+      fail(ErrorCode::CoincidentSites,
+           "two distinct lattice sites are closer than 1e-6 bohr; the input geometry is unphysical");
+    }
+    result.info.rebuilt = true;
+    result.info.cn_edges = graph.edges(cuda::kViewCn);
+    result.info.pair_edges = graph.edges(cuda::kViewPair);
+    result.info.atm_edges = graph.edges(cuda::kViewAtm);
+    const cuda::GraphView gv = graph.view();
+    const cuda::ModelView mv = model.view(parameters);
 
     // K0b: reset every accumulator of this evaluation in one call.
     arena.resize(12 * n);
     arena.zero_async();
+    const cuda::AccumView accum = accum_view();
+
+    // K1, K2: coordination numbers and reference weights.
+    cn.resize(n);
+    weights.resize(cuda::kRefPad * n);
+    dweights.resize(cuda::kRefPad * n);
+    cuda::launch_cn(g, mv, gv, cn.data(), s);
+    cuda::launch_weights(mv, g, cn.data(), weights.data(), derivatives ? dweights.data() : nullptr, s);
+
+    // K3: pair term.
+    if (parameters.pair_active()) {
+      cuda::launch_pair(g, mv, gv, weights.data(), derivatives ? dweights.data() : nullptr, accum, s);
+    }
+    if (debug != nullptr) download_debug(*debug, derivatives, accum);
+    // K5: CN-mediated derivatives.
+    if (derivatives) cuda::launch_cn_reverse(g, mv, gv, accum, s);
 
     // K6: reductions and transfers.
-    const cuda::AccumView accum = accum_view();
     cuda::launch_column_sums(accum.e_pair, kSumColumns, n, n, partials.data(), sums.data(), s);
     sums.download_async(host_sums.data(), kSumColumns);
     if (want_gradient) {
@@ -169,6 +233,37 @@ struct D3Context::Impl {
     return result;
   }
 
+  void download_debug(DebugResult& debug, bool derivatives, const cuda::AccumView& accum) {
+    const std::size_t n = numbers.size();
+    cudaStream_t s = stream.get();
+    debug.cn.resize(n);
+    debug.weights.resize(cuda::kRefPad * n);
+    cn.download_async(debug.cn.data(), n);
+    weights.download_async(debug.weights.data(), debug.weights.size());
+    if (derivatives) {
+      debug.dweights.resize(cuda::kRefPad * n);
+      debug.dEdcn.resize(n);
+      dweights.download_async(debug.dweights.data(), debug.dweights.size());
+      cuda::copy_to_host_async(accum.g, debug.dEdcn.data(), n, s);
+    }
+    std::vector<long long> row_ptr;
+    std::vector<int4> edges;
+    graph.download(row_ptr, edges);
+    debug.edge_i.clear();
+    debug.edge_j.clear();
+    debug.edge_shift.clear();
+    for (std::size_t i = 0; i < n; ++i) {
+      for (long long e = row_ptr[i]; e < row_ptr[i + 1]; ++e) {
+        const int4 edge = edges[static_cast<std::size_t>(e)];
+        debug.edge_i.push_back(static_cast<std::int32_t>(i));
+        debug.edge_j.push_back(edge.x);
+        debug.edge_shift.insert(debug.edge_shift.end(), {edge.y, edge.z, edge.w});
+      }
+    }
+    stream.synchronize();
+  }
+
+  bool debug_derivatives = false;
   std::mutex mutex;
   bool poisoned = false;
   int device;
@@ -182,6 +277,10 @@ struct D3Context::Impl {
   cuda::Stream stream;
   cuda::MemoryPool pool;
   cuda::DeviceModel model;
+  cuda::NeighborGraph graph;
+  DeviceBuffer<double> cn;
+  DeviceBuffer<double> weights;
+  DeviceBuffer<double> dweights;
   DeviceBuffer<int> species_dev;
   DeviceBuffer<double> positions_dev;
   DeviceBuffer<double4_32a> packed;
@@ -211,7 +310,7 @@ HostResult D3Context::evaluate(const Geometry& geometry, unsigned properties) {
     fail(ErrorCode::ContextPoisoned, "an earlier CUDA error invalidated this context");
   }
   try {
-    return impl_->evaluate(geometry, properties);
+    return impl_->run(geometry, properties, nullptr);
   } catch (const Error& error) {
     if (error.code() == ErrorCode::CudaRuntime) impl_->poisoned = true;
     throw;
@@ -219,9 +318,18 @@ HostResult D3Context::evaluate(const Geometry& geometry, unsigned properties) {
 }
 
 DebugResult D3Context::debug(const Geometry& geometry, bool derivatives) {
-  (void)geometry;
-  (void)derivatives;
-  fail(ErrorCode::UnsupportedFeature, "debug output is not implemented yet");
+  std::unique_lock<std::mutex> lock(impl_->mutex, std::try_to_lock);
+  if (!lock.owns_lock()) fail(ErrorCode::ContextBusy, "this context is busy");
+  if (impl_->poisoned) fail(ErrorCode::ContextPoisoned, "an earlier CUDA error invalidated this context");
+  DebugResult debug;
+  impl_->debug_derivatives = derivatives;
+  try {
+    impl_->run(geometry, derivatives ? kEnergy | kGradient : kEnergy, &debug);
+  } catch (const Error& error) {
+    if (error.code() == ErrorCode::CudaRuntime) impl_->poisoned = true;
+    throw;
+  }
+  return debug;
 }
 
 void D3Context::set_parameters(const D3Parameters& parameters) {

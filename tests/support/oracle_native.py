@@ -99,6 +99,42 @@ class Context:
     def stats(self) -> dict[str, Any]:
         return {"evaluations": self.evaluations}
 
+    def debug(
+        self,
+        positions: npt.NDArray[np.float64],
+        cell: npt.NDArray[np.float64],
+        pbc: tuple[bool, bool, bool],
+        *,
+        derivatives: bool = True,
+    ) -> dict[str, Any]:
+        result = _oracle.evaluate(
+            self._numbers,
+            positions,
+            parameters=self.parameters,
+            cell=cell,
+            pbc=pbc,
+            cutoffs=self.cutoffs,
+            gradient=derivatives,
+            tables=self.tables,
+        )
+        geometry = _oracle.make_geometry(self._numbers, positions, cell, pbc, self.tables)
+        edges = _oracle.directed_edges(
+            geometry, max(self.cutoffs.cn, self.cutoffs.disp2, self.cutoffs.disp3) + self.skin
+        )
+
+        def pad(values: npt.NDArray[np.float64] | None) -> npt.NDArray[np.float64] | None:
+            return None if values is None else np.pad(values, ((0, 0), (0, 1)))
+
+        return {
+            "cn": result.cn,
+            "weights": pad(result.weights),
+            "dweights": pad(result.dweights),
+            "dEdcn": result.g,
+            "edge_i": edges.i.astype(np.int32),
+            "edge_j": edges.j.astype(np.int32),
+            "edge_shift": edges.shift.astype(np.int32),
+        }
+
     def evaluate(
         self,
         positions: npt.NDArray[np.float64],
