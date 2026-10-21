@@ -1,6 +1,7 @@
 """Benchmark result schema ``vanderfast.benchmark/1``."""
 
 import json
+import os
 import platform
 import statistics
 import subprocess
@@ -74,6 +75,19 @@ def _gpu() -> dict[str, Any]:
     return dict(zip(query.split(","), values, strict=False))
 
 
+def _cpu() -> dict[str, Any]:
+    model = platform.processor() or platform.machine()
+    try:
+        cpuinfo = Path("/proc/cpuinfo").read_text(encoding="utf-8")
+    except OSError:
+        cpuinfo = ""
+    for line in cpuinfo.splitlines():
+        if line.startswith("model name"):
+            model = line.split(":", 1)[1].strip()
+            break
+    return {"model": model, "logical_cpus": os.cpu_count()}
+
+
 def envelope(software: dict[str, Any], reference_data: dict[str, Any]) -> dict[str, Any]:
     """Return the run-level metadata of a result file."""
     return {
@@ -83,7 +97,7 @@ def envelope(software: dict[str, Any], reference_data: dict[str, Any]) -> dict[s
         "software": software,
         "hardware": {
             "gpu": _gpu(),
-            "cpu": {"model": platform.processor() or platform.machine()},
+            "cpu": _cpu(),
             "os": platform.platform(),
         },
         "reference_data": reference_data,

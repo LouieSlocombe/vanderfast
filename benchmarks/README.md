@@ -8,6 +8,7 @@ writes a `vanderfast.benchmark/1` JSON file (`schema.py`) into `results/`
 python benchmarks/run.py --suite smoke
 python benchmarks/run.py --suite standard --atm both
 python benchmarks/compare.py results/before.json results/after.json
+python benchmarks/report.py results/run.json   # the Markdown tables in docs/performance.md
 ```
 
 Every case records the hardware, driver, software and build information,
