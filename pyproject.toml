@@ -1,60 +1,162 @@
 [build-system]
-requires = ["uv_build>=0.12.24,<0.13"]
-build-backend = "uv_build"
+requires = ["scikit-build-core>=1.1.1,<2", "pybind11>=3.0.1,<4"]
+build-backend = "scikit_build_core.build"
 
 [project]
-name = "template-python"
-version = "0.0.0"
-description = "A modern, typed Python package template."
+name = "vanderfast"
+version = "0.1.0.dev0"
+description = "GPU DFT-D3(BJ) dispersion energies, forces, and stress with an ASE calculator."
 readme = "README.md"
 requires-python = ">=3.14"
-license = "MIT"
-license-files = ["LICENSE"]
+# vanderfast code is MIT; the bundled D3 reference tables derive from
+# simple-dftd3 (LGPL-3.0-or-later) and mctc-lib (Apache-2.0). See
+# THIRD_PARTY_NOTICES.md.
+license = "MIT AND LGPL-3.0-or-later AND Apache-2.0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "data/licenses/*"]
 authors = [
   { name = "Louie Slocombe", email = "louies@hotmail.co.uk" },
 ]
-keywords = ["python", "template"]
+keywords = ["dispersion", "DFT-D3", "CUDA", "ASE", "molecular dynamics"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
-  "Operating System :: OS Independent",
+  "Development Status :: 2 - Pre-Alpha",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: C++",
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: Chemistry",
+  "Topic :: Scientific/Engineering :: Physics",
   "Typing :: Typed",
 ]
 dependencies = [
   "numpy>=2.3.3",
+  "ase>=3.26",
 ]
+
+[project.optional-dependencies]
+# Exact pin: the bundled tables and fixtures were generated from 1.6.0.
+reference = ["dftd3==1.6.0"]
 
 [project.scripts]
-template-python = "template_python.__main__:main"
+vanderfast = "vanderfast.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/LouieSlocombe/template_python"
-Issues = "https://github.com/LouieSlocombe/template_python/issues"
-Repository = "https://github.com/LouieSlocombe/template_python"
+Homepage = "https://github.com/LouieSlocombe/vanderfast"
+Issues = "https://github.com/LouieSlocombe/vanderfast/issues"
+Repository = "https://github.com/LouieSlocombe/vanderfast"
 
 [dependency-groups]
-dev = [
-  { include-group = "test" },
-  "mypy>=2.4.0",
-  "prek>=0.5.5",
-  "ruff>=0.16.10",
-]
 test = [
   "pytest>=9.1.1",
   "pytest-cov>=7.1.0",
 ]
+lint = [
+  "mypy>=2.4.0",
+  "prek>=0.5.5",
+  "ruff>=0.16.10",
+]
+build = [
+  "scikit-build-core>=1.1.1",
+  "pybind11>=3.0.1",
+  "cmake>=4.1",
+  "ninja>=1.11",
+  "build>=1.2",
+]
+dev = [
+  { include-group = "test" },
+  { include-group = "lint" },
+  { include-group = "build" },
+]
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+build-dir = "build/{wheel_tag}"
+cmake.version = ">=3.30"
+cmake.build-type = "Release"
+ninja.version = ">=1.11"
+wheel.packages = ["src/vanderfast"]
+install.components = ["python"]
+install.strip = true
+sdist.include = [
+  "src/vanderfast/data/*",
+  "data/**",
+  "THIRD_PARTY_NOTICES.md",
+  "tests/fixtures/**",
+]
+sdist.exclude = [".github/", "benchmarks/results/", "build/", "reports/"]
+messages.after-failure = """
+vanderfast native build failed. Activate the conda environment from
+build_tools/environment.yml (or set CUDACXX to a CUDA >= 13.0 nvcc).
+For a pure-Python install without the CUDA backend, set VANDERFAST_ENABLE_CUDA=OFF.
+"""
+
+[tool.scikit-build.cmake.define]
+VANDERFAST_ENABLE_CUDA = { env = "VANDERFAST_ENABLE_CUDA", default = "ON" }
+VANDERFAST_CUDA_ARCHITECTURES = { env = "VANDERFAST_CUDA_ARCHITECTURES", default = "native" }
+VANDERFAST_RELEASE_BUILD = { env = "VANDERFAST_RELEASE_BUILD", default = "OFF" }
+VANDERFAST_WERROR = { env = "VANDERFAST_WERROR", default = "OFF" }
+VANDERFAST_BUILD_TESTS = "OFF"
+
+[tool.cibuildwheel]
+# One CPython, one platform: the CUDA wheel targets manylinux_2_28 x86_64.
+build = "cp314-manylinux_x86_64"
+manylinux-x86_64-image = "manylinux_2_28"
+build-verbosity = 1
+test-groups = ["test"]
+# Everything that needs no GPU; the release workflow's gpu-verify job runs the
+# CUDA suite on the same wheel.
+test-command = [
+  "vanderfast verify-data",
+  "vanderfast info",
+  "python -m pytest {project}/tests/unit {project}/tests/cuda --rootdir {project} -m 'not cuda' --require-native --no-cov -p no:cacheprovider",
+]
+inherit.audit-requires = "append"
+inherit.audit-command = "append"
+audit-requires = ["twine"]
+audit-command = "twine check --strict {wheel}"
+
+[tool.cibuildwheel.linux]
+# The same CUDA 13.1 nvcc and runtime as the conda lock (build_tools/), from
+# NVIDIA's signed RHEL 8 repository.
+before-all = [
+  "dnf install -y dnf-plugins-core",
+  "dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo",
+  "dnf install -y cuda-nvcc-13-1-13.1.115 cuda-cudart-devel-13-1-13.1.80 cuda-cuobjdump-13-1-13.1.115",
+]
+# libcuda.so.1 comes from the driver and is loaded at run time by the static
+# CUDA runtime; the wheel must never vendor it.
+repair-wheel-command = [
+  "auditwheel repair --exclude libcuda.so.1 -w {dest_dir} {wheel}",
+  "python {project}/tools/check_wheel.py {dest_dir}/*.whl",
+]
+
+[tool.cibuildwheel.linux.environment]
+PATH = "/usr/local/cuda-13.1/bin:$PATH"
+CUDACXX = "/usr/local/cuda-13.1/bin/nvcc"
+VANDERFAST_RELEASE_BUILD = "ON"
+VANDERFAST_WERROR = "ON"
+VANDERFAST_CUDA_ARCHITECTURES = "release"
 
 [tool.pytest]
 minversion = "9.1"
 addopts = ["-ra", "--import-mode=importlib", "--cov", "--cov-report=term-missing"]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 strict = true
-filterwarnings = ["error"]
+filterwarnings = [
+  "error",
+  # ASE 3.29 assigns ndarray.shape, deprecated in NumPy 2.5 (ase/atoms.py).
+  "ignore:Setting the shape on a NumPy array has been deprecated:DeprecationWarning",
+]
+markers = [
+  "native: needs the compiled vanderfast._native extension (no GPU required)",
+  "cuda: needs a CUDA device",
+  "reference: needs the dftd3 1.6.0 reference library",
+  "slow: long-running; enabled with --run-slow",
+]
 
 [tool.coverage.run]
 branch = true
-source_pkgs = ["template_python"]
+source_pkgs = ["vanderfast"]
 
 [tool.coverage.report]
 fail_under = 100
@@ -62,7 +164,14 @@ show_missing = true
 skip_covered = true
 exclude_also = [
   'if __name__ == "__main__":',
+  'if TYPE_CHECKING:',
+  '@overload',
+  '^\s*\.\.\.$',
 ]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["build"]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -117,12 +226,30 @@ select = [
   "PLR2004", # literal expected values are clearer in assertions
   "S101",    # pytest uses bare assert statements
 ]
+"tools/**" = [
+  "INP001",  # standalone scripts
+  "T201",    # command-line output
+]
+"benchmarks/**" = [
+  "INP001",  # standalone scripts
+  "S603",    # subprocess calls with fixed argument lists
+  "T201",    # command-line output
+]
+"examples/**" = [
+  "INP001",  # standalone scripts
+  "T201",    # example output
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.ruff.lint.pylint]
+max-args = 12
+max-positional-args = 6
+
 [tool.mypy]
-files = ["src", "tests"]
+files = ["src", "tests", "tools", "benchmarks", "examples"]
+mypy_path = "tests"
 python_version = "3.14"
 strict = true
 warn_unreachable = true
@@ -141,3 +268,9 @@ enable_error_code = [
   "unused-awaitable",
 ]
 pretty = true
+# ASE ships py.typed but leaves many functions unannotated.
+untyped_calls_exclude = ["ase"]
+
+[[tool.mypy.overrides]]
+module = ["dftd3", "dftd3.*"]
+ignore_missing_imports = true

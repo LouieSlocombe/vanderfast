@@ -1,0 +1,47 @@
+# Pinned upstream sources for the bundled D3 reference data.
+#
+# tools/generate_d3_data.py downloads exactly these files at exactly these commits
+# (or reads them from a local checkout) and refuses to continue unless every
+# sha256 matches. Changing a pin is a scientific change: regenerate the data and
+# fixtures and review the manifest diff.
+
+schema = "vanderfast.sources/1"
+
+[sources.simple-dftd3]
+repository = "https://github.com/dftd3/simple-dftd3"
+tag = "v1.6.0"
+commit = "6004cfd62ad2a248ad32167392bd08c674da6161"
+license = "LGPL-3.0-or-later"
+license_files = ["COPYING", "COPYING.LESSER"]
+
+[sources.simple-dftd3.files]
+"src/dftd3/reference.f90" = "6551131d1d2c6fa186de0eb753f862b935bb60024dd74cf0eefb650eed9b126b"
+"src/dftd3/data/r4r2.f90" = "c339eec5d337fed885fbb3bff521f9c972bedcf368a435e24e58c110f6dd1925"
+"src/dftd3/data/vdwrad.f90" = "3f08b5755bfd643d6dbb56fd544c117145473a4b27138978a25d0475af985575"
+"src/dftd3/param.f90" = "27d80cb394567154069e12bad881648f7bb0fe71edf9f4b412d9851215d3c2e4"
+"src/dftd3/model.f90" = "0ea991aa8da1aed1284f3933ee0d72e5bc241d6b19ec2bbabf36feb0a2b4400f"
+"src/dftd3/ncoord.f90" = "2185dd7641aa16bb4e334c18aa14673fb66e0ac9a3dd2e0488fc80c97be805eb"
+"src/dftd3/cutoff.f90" = "1cd75a3168e23deae5810fd8a4c51f2136fd3c84e985241d060d16f088ba6997"
+"src/dftd3/disp.f90" = "b0d58fc9aecf0b2e8a7ff136cdcc24361f2afdfc54afcd5cba45e2a03774c23a"
+"src/dftd3/damping/rational.f90" = "e4bbd87d7164fc924275b6d7bb345602c408ed4ade0adac799bd4b143f25d172"
+"src/dftd3/damping/atm.f90" = "b1cb04b3e2c740c3b8a66fa952bd90f3394c63ebfb17bbcf7f343026ca20f765"
+"subprojects/mctc-lib.wrap" = "8d31b7350c504e503302e35f36e8193ad36d06d56a77770842e3e2129fc203bf"
+"COPYING" = "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+"COPYING.LESSER" = "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118"
+
+[sources.mctc-lib]
+repository = "https://github.com/grimme-lab/mctc-lib"
+commit = "06db4d899b8146ee96720d97ee405982b8b6f6f6"
+pinned_by = "simple-dftd3 v1.6.0 subprojects/mctc-lib.wrap (revision 06db4d8)"
+license = "Apache-2.0"
+license_files = ["LICENSE"]
+# The conda-forge simple-dftd3 1.6.0 build links mctc-lib 0.5.2; every file
+# listed below is byte-identical at that release.
+equivalent_release = { tag = "v0.5.2", commit = "e9de066d89f250d1cfb6de3a33f0c27c0e2f855d" }
+
+[sources.mctc-lib.files]
+"src/mctc/data/covrad.f90" = "fdbd599664a7f113633d96110531d810fdc8e54b6db26d4f584120d9c7cec314"
+"src/mctc/io/convert.f90" = "b05d7b4821deb4abe448cf11d53df9b118747294b44f0d774f056bc3b28430b9"
+"src/mctc/io/constants.f90" = "6ee2b599fc2d338f1a7e07b5b46e984e2612b4cfc58110d1203ecf19ebde2385"
+"src/mctc/io/codata2018.f90" = "47c4abbc7f9dddb3bba1c89563b45e792304bc56723f1c4b05fc978aa5d3704d"
+"LICENSE" = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"

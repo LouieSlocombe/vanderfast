@@ -36,3 +36,12 @@ htmlcov/
 
 # Notebooks
 .ipynb_checkpoints/
+
+# vanderfast build, profiling, and benchmark outputs
+/build*/
+/reports/
+/benchmarks/results/*
+!/benchmarks/results/.gitkeep
+*.ncu-rep
+*.nsys-rep
+*.qdrep

@@ -2,5 +2,8 @@
 
 *.sh text eol=lf
 *.traj binary
+*.bin binary
 
-uv.lock linguist-generated=true
+src/vanderfast/data/** linguist-generated=true
+tests/fixtures/** linguist-generated=true
+build_tools/conda-linux-64.lock linguist-generated=true

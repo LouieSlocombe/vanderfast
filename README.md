@@ -1,139 +1,135 @@
-# template-python
+# vanderfast
 
-A compact starting point for a modern, typed Python package. It uses
-[uv](https://docs.astral.sh/uv/) for environments, locking, and builds, a `src`
-layout, Ruff, strict mypy, pytest with full branch coverage, prek hooks, and
-GitHub Actions with trusted publishing to PyPI.
+GPU DFT-D3(BJ) dispersion energies, forces, and stress, with the
+Axilrod-Teller-Muto three-body term, for molecules and periodic systems. The
+numerical core is CUDA C++ in double precision; the Python layer provides a
+NumPy API and an ASE calculator. Results agree with simple-dftd3 v1.6.0 to
+about 1e-15 in atomic units on every reference fixture.
 
-The example package exposes a tiny NumPy API and a command-line entry point so
-the template works end to end before you replace the sample code.
+> **Status: pre-release (0.1.0.dev0).** Feature-complete for D3(BJ) + ATM on
+> molecules, 3D cells, slabs, and wires. Tested on one GPU (RTX 4080 SUPER,
+> sm_89); see the support matrix in [docs/build.md](docs/build.md).
 
 ## Requirements
 
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) 0.12 or newer.
-  uv installs the Python version pinned in `.python-version` (3.14) if it is
-  missing.
+- Linux x86_64, Python 3.14
+- An NVIDIA GPU with compute capability 7.5 or newer and a driver that supports
+  CUDA 13.1 (the CUDA runtime is linked statically; no CUDA toolkit is needed
+  at run time)
 
-## Quick start
+## Installation
 
-Create the environment with the package and its development tools:
-
-```bash
-uv sync
-```
-
-Run the example:
+From a release wheel, once one is published on PyPI:
 
 ```bash
-uv run template-python Ada
-uv run python -m template_python Ada
+pip install vanderfast             # add [reference] for the dftd3 1.6.0 cross-check backend
+python -m vanderfast info --json   # build, data, and device report
 ```
 
-Or use the library:
+From source, use the conda-forge toolchain in `build_tools/`:
+
+```bash
+conda env create -f build_tools/environment.yml
+conda activate vanderfast-dev
+make dev        # editable CUDA build for this machine's GPU
+make test-gpu   # full suite; fails rather than skips GPU and reference tests
+```
+
+`VANDERFAST_ENABLE_CUDA=OFF pip install .` installs the pure-Python parts
+(parameters, data, the NumPy oracle, and the dftd3 reference backend) without
+the CUDA backend.
+
+## Usage
 
 ```python
-from template_python import line, print_hello
+from ase.build import bulk
+from vanderfast.ase import D3Calculator
 
-print_hello("Ada")
-samples = line(-1.0, 1.0, num=5)
-print(samples)
+atoms = bulk("MgO", "rocksalt", a=4.21, cubic=True).repeat(2)
+atoms.calc = D3Calculator(method="pbe", damping="bj", atm=True)
+energy = atoms.get_potential_energy()  # eV
+forces = atoms.get_forces()  # eV/Å
+stress = atoms.get_stress()  # eV/Å³, 3D periodic cells only
 ```
+
+ATM must be chosen explicitly: `atm=True` sets `s9 = 1` and leaves the pair
+coefficients unchanged. For repeated evaluations without ASE objects, a
+`D3Context` keeps the device tables and the neighbour list between calls:
+
+```python
+from vanderfast import D3Context, resolve_parameters
+
+params = resolve_parameters(method="pbe", damping="bj", atm=False)
+with D3Context(atoms.numbers, params, skin=1.0) as context:
+    result = context.evaluate(
+        atoms.positions, cell=atoms.cell[:], pbc=True, properties=("energy", "forces", "stress")
+    )
+```
+
+More in [examples/](examples/): a molecule, crystal stress, a comparison with
+`dftd3.ase`, repeated MD evaluations, and the array interface.
+
+## Performance
+
+Warm energy-and-force evaluations of the release wheel on an RTX 4080 SUPER,
+against simple-dftd3 1.6.0 (conda-forge, OpenMP) on 28 threads of an
+i7-14700KF. Default cutoffs: 40 bohr for CN and ATM, 60 bohr for the pair term.
+Times include host-device transfers and Python. dftd3 was not timed above 1024
+atoms.
+
+| System | Atoms | Term | vanderfast (ms) | dftd3, 28 threads (ms) | Speedup |
+| --- | ---: | --- | ---: | ---: | ---: |
+| NaCl primitive cell | 2 | pair | 0.152 | 0.411 | 3x |
+| NaCl primitive cell | 2 | pair + ATM | 5.65 | 79.9 | 14x |
+| benzene cluster | 1020 | pair | 0.78 | 9.82 | 13x |
+| benzene cluster | 1020 | pair + ATM | 39 | 147 | 4x |
+| liquid water | 1023 | pair | 6.31 | 43.6 | 7x |
+| liquid water | 1023 | pair + ATM | 1,505 | 6,756 | 4x |
+| MgO crystal | 512 | pair | 3.19 | 14 | 4x |
+| MgO crystal | 512 | pair + ATM | 817 | 5,651 | 7x |
+| liquid water | 4095 | pair | 19.6 | – | – |
+| liquid water | 4095 | pair + ATM | 3,729 | – | – |
+| MgO crystal | 4096 | pair | 25.5 | – | – |
+| MgO crystal | 4096 | pair + ATM | 6,682 | – | – |
+
+Against a 28-thread CPU run of the reference, the speedup is 3–14×. With
+ATM on, the three-body term takes over 98% of GPU time once a system passes
+about 1000 atoms (1.5 million triangles per atom in MgO). It is FP64-bound, and
+this consumer GPU runs FP64 at 1/64 of its FP32 rate. A data-centre GPU with
+full-rate FP64 should do much better, but none has been measured. Full
+tables, stage timings, the method, and the remaining bottlenecks are in
+[docs/performance.md](docs/performance.md).
+
+## Documentation
+
+- [docs/api.md](docs/api.md): parameters, `D3Context`, results, errors,
+  diagnostics
+- [docs/ase.md](docs/ase.md): the ASE calculator and its caching rules
+- [docs/conventions.md](docs/conventions.md): units, geometry, counting,
+  parameters, and known differences from simple-dftd3
+- [docs/validation.md](docs/validation.md): how correctness is established
+- [docs/performance.md](docs/performance.md): measured results and method
+- [docs/limitations.md](docs/limitations.md): what is out of scope
+- [docs/build.md](docs/build.md): toolchain, build options, support matrix,
+  releasing
+- [docs/data-provenance.md](docs/data-provenance.md): how the bundled tables
+  are generated and verified
 
 ## Development
 
-Install the Git hooks once. They then run Ruff, lockfile, workflow security,
-and file hygiene checks before each commit:
-
 ```bash
-uv run prek install
+make lint            # pre-commit hooks (prek) and mypy
+make test            # CPU: oracle, fixtures, fake-native API tests, 100% coverage
+make cpp-test        # Catch2 host and device tests
+make sanitize        # compute-sanitizer memcheck, racecheck, synccheck, initcheck
+make data-check      # regenerate the reference tables byte for byte
+make fixtures-check  # regenerate the dftd3 fixtures
+make bench-smoke     # benchmark harness sanity run
 ```
-
-Run the complete local checks:
-
-```bash
-uv run prek run --all-files
-uv run mypy
-uv run pytest
-uv build
-```
-
-Ruff can apply safe lint and formatting changes with:
-
-```bash
-uv run ruff check --fix .
-uv run ruff format .
-```
-
-The hooks use the standard `.pre-commit-config.yaml` format, so
-`pre-commit` works too if you prefer it.
-
-### Dependencies
-
-`pyproject.toml` declares the oldest versions the package supports and
-`uv.lock` pins the exact versions used in development and CI. CI also tests
-against the oldest allowed versions, so keep lower bounds honest.
-
-```bash
-uv add requests                # add a runtime dependency
-uv add --group dev hypothesis  # add a development tool
-uv lock --upgrade              # refresh every locked version
-```
-
-Dependabot refreshes `uv.lock`, the pre-commit hooks, and the GitHub Actions
-once a month, grouping each into a single pull request.
-
-### Continuous integration
-
-Every push to `main` and every pull request runs the hooks and mypy, tests on
-Linux, macOS, and Windows with Python 3.14 and the upcoming 3.15, tests the
-free-threaded 3.14t build and the oldest allowed dependencies, and builds and
-smoke tests the sdist and wheel. Require the **All checks passed** job in
-branch protection rather than each matrix entry.
-
-## Releasing
-
-1. Add the repository as a
-   [trusted publisher](https://docs.pypi.org/trusted-publishers/) on PyPI, with
-   workflow `release.yml` and environment `pypi`, and create a `pypi`
-   environment in the repository settings.
-2. Bump the version and commit it, for example `uv version --bump minor`.
-3. Publish a GitHub release whose tag is the version prefixed with `v`, such as
-   `v0.1.0`. The release workflow checks the tag matches, builds the
-   distributions, and uploads them to PyPI with attestations.
-
-## Conda
-
-If you prefer Conda, see [`build_tools/`](build_tools/README.md).
-
-## Project layout
-
-```text
-.
-├── .github/
-│   ├── dependabot.yml          # monthly grouped dependency updates
-│   └── workflows/              # CI and PyPI release
-├── build_tools/                # optional Conda setup
-├── src/template_python/        # installable package
-├── tests/                      # behavior-focused tests
-├── .pre-commit-config.yaml     # Git hooks run by prek or pre-commit
-├── .python-version             # development Python version for uv
-├── pyproject.toml              # project metadata and tool configuration
-└── uv.lock                     # pinned development dependencies
-```
-
-## Use this template
-
-After creating a repository from this template:
-
-1. Rename the `template-python` distribution, `src/template_python` import
-   package, and console command.
-2. Update the description, author, repository URLs, and license metadata.
-3. Choose the Python versions your project supports in `requires-python`,
-   the classifiers, `.python-version`, and the CI matrix.
-4. Replace the example API and tests while keeping the quality gates green.
-5. Set a real release version and configure trusted publishing only when the
-   package is ready to publish.
 
 ## License
 
-Released under the [MIT License](LICENSE).
+vanderfast's code is released under the [MIT License](LICENSE). The bundled
+reference tables derive from simple-dftd3 (LGPL-3.0-or-later) and mctc-lib
+(Apache-2.0); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). A
+replacement table can be loaded at run time with `reference_data=`.

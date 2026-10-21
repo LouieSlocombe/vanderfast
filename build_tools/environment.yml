@@ -1,9 +1,36 @@
-name: template-python
+name: vanderfast-dev
 
 channels:
   - conda-forge
   - nodefaults
 
 dependencies:
-  - python>=3.14
+  # Runtime
+  - python=3.14
   - pip>=25.1
+  - numpy>=2.3.3
+  - ase>=3.26
+  # Pinned numerical reference (optional at runtime, required for fixtures/tests)
+  - dftd3-python=1.6.0
+  - simple-dftd3=1.6.0
+  # Build backend and native toolchain (CUDA 13.1 accepts host GCC <= 15)
+  - scikit-build-core>=1.1.1
+  - pybind11>=3.0.1
+  - cmake>=4.1
+  - ninja
+  - python-build
+  - cuda-version=13.1
+  - cuda-nvcc
+  - cuda-cudart-dev
+  - cuda-cudart-static
+  - cuda-cuobjdump
+  - gxx_linux-64=15.*
+  - libstdcxx>=15
+  - catch2>=3.5
+  - ccache
+  # Test and development tools
+  - pytest>=9.1.1
+  - pytest-cov>=7.1.0
+  - ruff>=0.16.10
+  - mypy>=2.4.0
+  - prek>=0.5.5
