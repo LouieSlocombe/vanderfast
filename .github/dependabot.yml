@@ -1,5 +1,7 @@
 version: 2
 
+# Conda dependencies are pinned in build_tools/conda-linux-64.lock and
+# refreshed by hand with `make lock`; Dependabot has no conda ecosystem.
 updates:
   - package-ecosystem: github-actions
     directory: "/"
@@ -10,20 +12,6 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
-
-  # Keep the lower bounds in pyproject.toml as the oldest supported versions
-  # and refresh only uv.lock, which pins what development and CI use.
-  - package-ecosystem: uv
-    directory: "/"
-    schedule:
-      interval: monthly
-    versioning-strategy: lockfile-only
-    cooldown:
-      default-days: 7
-    groups:
-      python:
-        patterns: ["*"]
-        update-types: [minor, patch]
 
   - package-ecosystem: pre-commit
     directory: "/"

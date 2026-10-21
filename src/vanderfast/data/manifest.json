@@ -1,0 +1,203 @@
+{
+ "anomalies": [
+  {
+   "Z": 96,
+   "kind": "populated_padding_reference_cn",
+   "reference": 7,
+   "value": 5.6866
+  },
+  {
+   "Z": 96,
+   "kind": "populated_padding_c6",
+   "nonzero_entries": 344,
+   "reference": 7
+  }
+ ],
+ "conventions": {
+  "atm": {
+   "alp_effective": "alp + 2",
+   "c9": "-s9*sqrt(|c6ij*c6ik*c6jk|)",
+   "default_cutoff_bohr": 40.0,
+   "edge_exclusion": "each of the three edges: r2 > rc^2 or r2 < DBL_EPSILON",
+   "enabled_if": "|s9| >= DBL_EPSILON",
+   "rs9": "4/3",
+   "third_edge": "vjk = vik - vij (no re-imaging)"
+  },
+  "cn": {
+   "cutoff_rule": "r2 > rc^2 excluded (r2 == rc^2 included)",
+   "default_cutoff_bohr": 40.0,
+   "exclude_r2_below": 1e-12,
+   "kcn": 16.0
+  },
+  "pair": {
+   "default_cutoff_bohr": 60.0,
+   "exclude_r2_below": "DBL_EPSILON",
+   "kappa": "3*r4r2_i*r4r2_j",
+   "r0": "a1*sqrt(kappa) + a2",
+   "skip_if": "|s6| < eps and |s8| < eps"
+  },
+  "rcov": "mctc covalent_rad_d3 = (4/3)*covalent_rad_2009, already scaled, bohr",
+  "source_lines": {
+   "atm.alp_shift": "src/dftd3/damping/rational.f90: self%s9, rs9, self%alp+2,",
+   "atm.c9": "src/dftd3/damping/atm.f90: c9 = -s9 * sqrt(abs(c6ij*c6ik*c6jk))",
+   "atm.enabled": "src/dftd3/damping/rational.f90: has = abs(self%s9) >= epsilon(1.0_wp)",
+   "atm.exclusion": "src/dftd3/damping/atm.f90: if (r2ij > cutoff2 .or. r2ij < epsilon(1.0_wp)) cycle",
+   "atm.fdmp": "src/dftd3/damping/atm.f90: fdmp = 1.0_wp / (1.0_wp + 6.0_wp * (r0 / r1)**alp3)",
+   "atm.rs9": "src/dftd3/damping/rational.f90: real(wp), parameter :: rs9 = 4.0_wp/3.0_wp",
+   "atm.third_edge": "src/dftd3/damping/atm.f90: vjk(:) = vik(:) - vij(:)",
+   "cn.counting": "src/dftd3/ncoord.f90: countf = 1.0_wp/(1.0_wp + exp(-default_kcn*(rc/r1 - 1.0_wp)))",
+   "cn.derivative": "src/dftd3/ncoord.f90: dcf = -cf*(1.0_wp - cf)*default_kcn*rc/r2",
+   "cn.exclusion": "src/dftd3/ncoord.f90: if (r2 > cutoff2 .or. r2 < 1.0e-12_wp) cycle",
+   "cn.kcn": "src/dftd3/ncoord.f90: real(wp), parameter :: default_kcn = 16.0_wp",
+   "cutoff.cn": "src/dftd3/cutoff.f90: real(wp), parameter :: cn_default = 40.0_wp",
+   "cutoff.disp2": "src/dftd3/cutoff.f90: real(wp), parameter :: disp2_default = 60.0_wp",
+   "cutoff.disp3": "src/dftd3/cutoff.f90: real(wp), parameter :: disp3_default = 40.0_wp",
+   "pair.exclusion": "src/dftd3/damping/rational.f90: if (r2 > cutoff2 .or. r2 < epsilon(1.0_wp)) cycle",
+   "pair.kappa": "src/dftd3/damping/rational.f90: rrij = 3*r4r2(izp)*r4r2(jzp)",
+   "pair.r0": "src/dftd3/damping/rational.f90: r0ij = self%a1 * sqrt(rrij) + self%a2",
+   "pair.skip": "src/dftd3/damping/rational.f90: if (abs(self%s6) < epsilon(1.0_wp) .and. abs(self%s8) < epsilon(1.0_wp)) return",
+   "weights.dgw": "src/dftd3/model.f90: dgwk = expd * norm - expw * dnorm * norm**2",
+   "weights.exceptional": "src/dftd3/model.f90: is_exceptional = ieee_is_nan(val) .or. abs(val) > huge(val)",
+   "weights.fallback": "src/dftd3/model.f90: if (maxval(self%cn(:self%ref(izp), izp)) == self%cn(iref, izp)) then",
+   "weights.gaussian": "src/dftd3/model.f90: cngw = exp ( -wf * ( cn - cnref )**2 )",
+   "weights.wf": "src/dftd3/model.f90: real(wp), parameter :: wf_default = 4.0_wp"
+  },
+  "weights": {
+   "fallback": "non-finite normalised weight -> 1.0 for every reference whose CN equals the maximum valid reference CN, else 0.0; non-finite derivative -> 0.0",
+   "tied_maxima": [],
+   "wf": 4.0
+  }
+ },
+ "counts": {
+  "aliases": 201,
+  "bj_methods": 161,
+  "n_c6": 57810,
+  "n_pairs": 5356,
+  "n_refs_total": 338
+ },
+ "format": {
+  "header_bytes": 512,
+  "layout": "C6 pairs ordered by ic = Zi(Zi-1)/2 + (Zj-1) for Zi >= Zj; each block row-major nref(Zi) x nref(Zj) with rows for the larger Z; per-element arrays indexed by Z with slot 0 a sentinel",
+  "name": "d3_reference.bin",
+  "section_alignment": 64,
+  "version": 1
+ },
+ "generator": {
+  "script": "tools/generate_d3_data.py",
+  "version": 1
+ },
+ "notices": "THIRD_PARTY_NOTICES.md",
+ "outputs": {
+  "d3_reference.bin": {
+   "bytes": 510464,
+   "sha256": "1361e7e437052c4f21759518cb53303c399be2be78caea0afaf9bb0450ea3507"
+  },
+  "d3bj_methods.json": {
+   "bytes": 33553,
+   "sha256": "cfbaf25b26934b5a9aa21da7b7de34c53ca34b322fb632d5e82a2c953f2b8a6c"
+  }
+ },
+ "schema": "vanderfast.reference-manifest/1",
+ "sources": [
+  {
+   "commit": "6004cfd62ad2a248ad32167392bd08c674da6161",
+   "files": {
+    "COPYING": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "COPYING.LESSER": "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118",
+    "src/dftd3/cutoff.f90": "1cd75a3168e23deae5810fd8a4c51f2136fd3c84e985241d060d16f088ba6997",
+    "src/dftd3/damping/atm.f90": "b1cb04b3e2c740c3b8a66fa952bd90f3394c63ebfb17bbcf7f343026ca20f765",
+    "src/dftd3/damping/rational.f90": "e4bbd87d7164fc924275b6d7bb345602c408ed4ade0adac799bd4b143f25d172",
+    "src/dftd3/data/r4r2.f90": "c339eec5d337fed885fbb3bff521f9c972bedcf368a435e24e58c110f6dd1925",
+    "src/dftd3/data/vdwrad.f90": "3f08b5755bfd643d6dbb56fd544c117145473a4b27138978a25d0475af985575",
+    "src/dftd3/disp.f90": "b0d58fc9aecf0b2e8a7ff136cdcc24361f2afdfc54afcd5cba45e2a03774c23a",
+    "src/dftd3/model.f90": "0ea991aa8da1aed1284f3933ee0d72e5bc241d6b19ec2bbabf36feb0a2b4400f",
+    "src/dftd3/ncoord.f90": "2185dd7641aa16bb4e334c18aa14673fb66e0ac9a3dd2e0488fc80c97be805eb",
+    "src/dftd3/param.f90": "27d80cb394567154069e12bad881648f7bb0fe71edf9f4b412d9851215d3c2e4",
+    "src/dftd3/reference.f90": "6551131d1d2c6fa186de0eb753f862b935bb60024dd74cf0eefb650eed9b126b",
+    "subprojects/mctc-lib.wrap": "8d31b7350c504e503302e35f36e8193ad36d06d56a77770842e3e2129fc203bf"
+   },
+   "license": "LGPL-3.0-or-later",
+   "license_files": [
+    "COPYING",
+    "COPYING.LESSER"
+   ],
+   "name": "simple-dftd3",
+   "repository": "https://github.com/dftd3/simple-dftd3",
+   "tag": "v1.6.0"
+  },
+  {
+   "commit": "06db4d899b8146ee96720d97ee405982b8b6f6f6",
+   "equivalent_release": {
+    "commit": "e9de066d89f250d1cfb6de3a33f0c27c0e2f855d",
+    "tag": "v0.5.2"
+   },
+   "files": {
+    "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "src/mctc/data/covrad.f90": "fdbd599664a7f113633d96110531d810fdc8e54b6db26d4f584120d9c7cec314",
+    "src/mctc/io/codata2018.f90": "47c4abbc7f9dddb3bba1c89563b45e792304bc56723f1c4b05fc978aa5d3704d",
+    "src/mctc/io/constants.f90": "6ee2b599fc2d338f1a7e07b5b46e984e2612b4cfc58110d1203ecf19ebde2385",
+    "src/mctc/io/convert.f90": "b05d7b4821deb4abe448cf11d53df9b118747294b44f0d774f056bc3b28430b9"
+   },
+   "license": "Apache-2.0",
+   "license_files": [
+    "LICENSE"
+   ],
+   "name": "mctc-lib",
+   "pinned_by": "simple-dftd3 v1.6.0 subprojects/mctc-lib.wrap (revision 06db4d8)",
+   "repository": "https://github.com/grimme-lab/mctc-lib"
+  }
+ ],
+ "supported_atomic_numbers": {
+  "max": 103,
+  "min": 1
+ },
+ "tables": {
+  "bj_parameters": {
+   "sha256": "cfbaf25b26934b5a9aa21da7b7de34c53ca34b322fb632d5e82a2c953f2b8a6c"
+  },
+  "covalent_radii_d3": {
+   "sha256": "8738f91a020d545b4267370caa0b1184ff96dc401168c05e65fa813807bf579b"
+  },
+  "number_of_references": {
+   "sha256": "7ab727aa69ccd219ea382c9516254cfcf1dbbcde89c6255e8c6bf11510940c58"
+  },
+  "r4r2": {
+   "sha256": "3da88329ac9b662103a14fff0bff57b71a56bd57a31089280db504b0c5ab6759"
+  },
+  "reference_c6_packed": {
+   "sha256": "5831132ced21d012055ed830632077d24125a6dd05c199b7cdf44cc4b245b2e7"
+  },
+  "reference_cn": {
+   "sha256": "a0cd2842118a6ccd9b643c971521fd19f949d8fec2d0f78ad9d52768d27a29f2"
+  },
+  "vdw_radii": {
+   "sha256": "e14e0768a6d100c1efdc4d0c5c17b09144ea60d7e63ca8c026e6e429a3492af6"
+  }
+ },
+ "units": {
+  "boundary": {
+   "bohr_angstrom": 0.5291772105638411,
+   "hartree_ev": 27.211386024367243,
+   "recipes": {
+    "cutoffs": "x / Bohr",
+    "energy": "e * Hartree",
+    "forces": "g * -(Hartree/Bohr)",
+    "positions": "x * (1/Bohr)",
+    "stress": "G * (Hartree/V) -> flat[[0, 4, 8, 5, 2, 1]]"
+   },
+   "source": "ase.units (CODATA 2014), identical to dftd3.ase"
+  },
+  "internal": "bohr, hartree",
+  "table_aatoau": {
+   "hex": "0x1.e3c5175fa440bp+0",
+   "source": "mctc_io_convert: aatoau = 1/(hbar/(me*c*alpha)*1e10), CODATA 2018",
+   "value": 1.8897261246204404
+  }
+ },
+ "zero_c6_valid_references": [
+  {
+   "Z": 101,
+   "reference": 6
+  }
+ ]
+}

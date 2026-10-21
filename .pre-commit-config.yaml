@@ -3,7 +3,11 @@ repos:
     rev: v6.0.0
     hooks:
       - id: check-added-large-files
+        # The generated D3 reference table (~500 KiB) is regenerated
+        # byte-identically in CI by tools/generate_d3_data.py --check.
+        exclude: ^src/vanderfast/data/d3_reference\.bin$
       - id: check-case-conflict
+      - id: check-json
       - id: check-merge-conflict
       - id: check-toml
       - id: check-yaml
@@ -19,12 +23,16 @@ repos:
         args: [--fix]
       - id: ruff-format
 
-  - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.12.24
-    hooks:
-      - id: uv-lock
-
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
     rev: v1.30.1
     hooks:
       - id: zizmor
+
+  - repo: local
+    hooks:
+      - id: vanderfast-data-hashes
+        name: bundled reference data matches its manifest
+        entry: python tools/check_data_hashes.py
+        language: python
+        pass_filenames: false
+        files: ^src/vanderfast/data/

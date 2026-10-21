@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Weekly: catches upstream URL rot for the pinned reference sources.
+    - cron: "17 5 * * 1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -14,12 +17,17 @@ permissions: {}
 
 env:
   FORCE_COLOR: "1"
+  OMP_NUM_THREADS: "1"
+
+defaults:
+  run:
+    shell: bash -el {0}
 
 jobs:
   lint:
     name: Lint and type check
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
 
@@ -29,40 +37,36 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Set up the locked conda environment
+        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+        with:
+          environment-file: build_tools/conda-linux-64.lock
+          environment-name: vanderfast-dev
 
-      - name: Install the project
-        run: uv sync --locked
+      - name: Install the package without the CUDA backend
+        run: VANDERFAST_ENABLE_CUDA=OFF python -m pip install --no-build-isolation --no-deps -e .
 
       - name: Run the pre-commit hooks
-        run: uv run --locked prek run --all-files --show-diff-on-failure
+        run: prek run --all-files --show-diff-on-failure
 
       - name: Type check
-        run: uv run --locked mypy
+        run: mypy
 
-  test:
-    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }}, ${{ matrix.resolution }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+  test-cpu:
+    name: CPU tests (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
 
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.14", "3.15"]
-        resolution: [locked]
         include:
-          # The oldest dependency versions allowed by pyproject.toml.
-          - os: ubuntu-latest
-            python-version: "3.14"
-            resolution: lowest-direct
-          # The free-threaded (no-GIL) build.
-          - os: ubuntu-latest
-            python-version: "3.14t"
-            resolution: locked
+          - environment: locked
+            file: build_tools/conda-linux-64.lock
+          - environment: oldest
+            file: build_tools/environment-oldest.yml
 
     steps:
       - name: Check out the repository
@@ -70,23 +74,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Set up the conda environment
+        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
         with:
-          python-version: ${{ matrix.python-version }}
+          environment-file: ${{ matrix.file }}
+          environment-name: vanderfast-dev
 
-      - name: Test with the locked dependencies
-        if: matrix.resolution == 'locked'
-        run: uv run --locked --no-default-groups --group test pytest
+      - name: Install the package without the CUDA backend
+        run: VANDERFAST_ENABLE_CUDA=OFF python -m pip install --no-build-isolation --no-deps -e .
 
-      - name: Test with the oldest allowed dependencies
-        if: matrix.resolution == 'lowest-direct'
-        run: uv run --resolution lowest-direct --no-default-groups --group test pytest
+      - name: Test against the oracle and the dftd3 reference
+        run: python -m pytest --require-reference
 
-  build:
-    name: Build distributions
+  data:
+    name: Reference data and fixtures
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
 
@@ -96,22 +99,55 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Set up the locked conda environment
+        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+        with:
+          environment-file: build_tools/conda-linux-64.lock
+          environment-name: vanderfast-dev
 
-      - name: Build the sdist and wheel
-        run: uv build --no-sources
+      - name: Install the package without the CUDA backend
+        run: VANDERFAST_ENABLE_CUDA=OFF python -m pip install --no-build-isolation --no-deps -e .
 
-      - name: Smoke test the wheel
-        run: uv run --isolated --no-project --with dist/*.whl template-python CI
+      - name: Regenerate the reference tables from the pinned sources
+        run: python -I tools/generate_d3_data.py --check --verify-binary "$CONDA_PREFIX/lib"
 
-      - name: Smoke test the sdist
-        run: uv run --isolated --no-project --with dist/*.tar.gz python -m template_python CI
+      - name: Regenerate the dftd3 fixtures
+        run: python tools/generate_fixtures.py --check
+
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up the locked conda environment
+        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+        with:
+          environment-file: build_tools/conda-linux-64.lock
+          environment-name: vanderfast-dev
+
+      - name: Build the sdist
+        run: python -m build --sdist --no-isolation
+
+      - name: Check the sdist contents
+        run: python tools/check_sdist.py dist/*.tar.gz
+
+      - name: Install the sdist without CUDA and smoke test it
+        run: |
+          VANDERFAST_ENABLE_CUDA=OFF python -m pip install --no-build-isolation --no-deps dist/*.tar.gz
+          cd "$RUNNER_TEMP" && vanderfast verify-data && vanderfast info
 
   all-green:
     name: All checks passed
     if: always()
-    needs: [lint, test, build]
+    needs: [lint, test-cpu, data, sdist]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}

@@ -1,14 +1,35 @@
-# Conda environment
+# Build environment
 
-uv is the recommended way to work on this project (see the root `README.md`).
-If you prefer Conda, create and activate the optional environment from the
-repository root, then install the package and its development tools with pip:
+vanderfast is developed in a conda-forge environment that provides Python, the
+runtime dependencies, the pinned `dftd3` 1.6.0 reference, and a self-contained
+CUDA 13.1 + GCC 15 toolchain (CUDA 13.1 accepts host GCC <= 15).
+
+| File | Purpose |
+| --- | --- |
+| `environment.yml` | Development environment specification (source of truth) |
+| `conda-linux-64.lock` | Explicit lock of a solved `environment.yml`, used by CI |
+| `environment-oldest.yml` | Oldest allowed dependency versions, CPU tests only |
+
+Create and activate the environment, then install vanderfast in editable mode:
 
 ```bash
-conda env create -f build_tools/environment.yml
-conda activate template-python
-python -m pip install --group dev -e .
+conda env create -f build_tools/environment.yml   # or: conda create -n vanderfast-dev --file build_tools/conda-linux-64.lock
+conda activate vanderfast-dev
+python -m pip install --no-build-isolation --no-deps -e .
 ```
 
-This path resolves the latest versions allowed by `pyproject.toml` rather than
-the exact versions pinned in `uv.lock`.
+Set `VANDERFAST_ENABLE_CUDA=OFF` to install only the pure-Python parts (oracle,
+reference adapter, parameter tables) on machines without CUDA.
+
+Refresh the lock after changing `environment.yml`:
+
+```bash
+conda env update -n vanderfast-dev -f build_tools/environment.yml --prune
+conda list -n vanderfast-dev --explicit --md5 > build_tools/conda-linux-64.lock
+```
+
+The machine's `/usr/bin/nvcc` may be an older distribution CUDA. The CMake build
+refuses CUDA < 13.0, and the conda toolchain keeps system CUDA headers out of
+the include path. To build with a system toolkit instead, set
+`CUDACXX=/usr/local/cuda-13.1/bin/nvcc`. Profilers and `compute-sanitizer` from a
+system CUDA 13.1 installation work with binaries built by the conda toolchain.
