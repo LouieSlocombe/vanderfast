@@ -137,6 +137,8 @@ struct D3Context::Impl {
     make(cn);
     make(weights);
     make(dweights);
+    make(atm_partials);
+    make(atm_counters);
     make(species_dev);
     make(positions_dev);
     make(packed);
@@ -185,10 +187,6 @@ struct D3Context::Impl {
                                            " positions, got " + std::to_string(geometry.n_atoms));
     }
     const Lattice lattice = make_lattice(geometry);
-    if (parameters.atm_active()) {
-      fail(ErrorCode::UnsupportedFeature,
-           "the ATM three-body term is not implemented in this development build");
-    }
     const bool want_gradient = (properties & kGradient) != 0;
     const bool want_virial = (properties & kVirial) != 0;
     const bool want_atoms = (properties & kAtomEnergies) != 0;
@@ -266,6 +264,8 @@ struct D3Context::Impl {
     if (parameters.pair_active()) {
       cuda::launch_pair(g, mv, gv, weights.data(), derivatives ? dweights.data() : nullptr, accum, s);
     }
+    // K4: ATM triangles in bounded launches.
+    if (parameters.atm_active()) run_atm(g, mv, gv, derivatives, accum, result.info);
     if (debug != nullptr) download_debug(*debug, derivatives, accum);
     // K5: CN-mediated derivatives.
     if (derivatives) cuda::launch_cn_reverse(g, mv, gv, accum, s);
@@ -295,6 +295,36 @@ struct D3Context::Impl {
       for (std::size_t i = 0; i < n; ++i) result.atom_energies[i] = host_atoms.data()[i] + host_atoms.data()[n + i];
     }
     return result;
+  }
+
+  void run_atm(const cuda::GeometryView& g, const cuda::ModelView& mv, const cuda::GraphView& gv,
+               bool derivatives, const cuda::AccumView& accum, EvalInfo& info) {
+    const long long items = graph.atm_items();
+    if (items == 0) return;
+    cudaStream_t s = stream.get();
+    // Bound the candidate triangles per launch (about 2^30) so a single
+    // launch stays short even on display GPUs with a watchdog.
+    const double mean_row = static_cast<double>(graph.edges(cuda::kViewAtm)) /
+                            static_cast<double>(std::max<std::size_t>(1, numbers.size()));
+    const double work_per_item = 0.5 * cuda::kAtmItemWidth * std::max(1.0, mean_row);
+    const long long per_launch = std::clamp<long long>(
+        static_cast<long long>(1073741824.0 / work_per_item), 1024, 1 << 20);
+    const long long chunk =
+        std::min(items, options.atm_items_per_launch > 0 ? options.atm_items_per_launch : per_launch);
+    atm_partials.resize(static_cast<std::size_t>(7 * chunk));
+    atm_counters.resize(3);
+    atm_counters.zero_async();
+    for (long long begin = 0; begin < items; begin += chunk) {
+      cuda::launch_atm(g, mv, gv, graph.atm_item_prefix(), begin, std::min(chunk, items - begin),
+                       weights.data(), derivatives ? dweights.data() : nullptr, accum,
+                       atm_partials.data(), atm_counters.data(), s);
+    }
+    host_counters.reserve(3);
+    atm_counters.download_async(host_counters.data(), 3);
+    stream.synchronize();
+    info.atm_candidates = host_counters.data()[0];
+    info.atm_accepted = host_counters.data()[1];
+    info.atm_c6_skipped = host_counters.data()[2];
   }
 
   void download_debug(DebugResult& debug, bool derivatives, const cuda::AccumView& accum) {
@@ -346,6 +376,9 @@ struct D3Context::Impl {
   DeviceBuffer<double> cn;
   DeviceBuffer<double> weights;
   DeviceBuffer<double> dweights;
+  DeviceBuffer<double> atm_partials;
+  DeviceBuffer<unsigned long long> atm_counters;
+  PinnedBuffer<unsigned long long> host_counters;
   DeviceBuffer<int> species_dev;
   DeviceBuffer<double> positions_dev;
   DeviceBuffer<double4_32a> packed;

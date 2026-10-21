@@ -19,6 +19,7 @@ namespace {
 constexpr int kWarp = 32;
 constexpr int kWarpsPerBlock = 4;
 constexpr unsigned kFullMask = 0xffffffffu;
+constexpr int kAtmItems = 32;  // outer sites per ATM work item (kAtmItemWidth)
 
 __device__ __forceinline__ math::Vec3 load(const double4_32a* pos, int i) {
   const double4_32a p = pos[i];
@@ -92,11 +93,13 @@ __global__ void count_kernel(GeometryView g, ImageBox box, BandSpec bands, int* 
 __global__ void totals_kernel(const int* __restrict__ counts, int n, BandSpec bands,
                               long long* __restrict__ totals, int* __restrict__ len_cn,
                               int* __restrict__ len_pair, int* __restrict__ len_atm,
+                              long long* __restrict__ items,
                               unsigned long long* __restrict__ scalars) {
   const int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
   if (i > n) return;
   if (i == n) {
     totals[n] = 0;
+    items[n] = 0;
     return;
   }
   int prefix[4] = {0, 0, 0, 0};
@@ -106,6 +109,7 @@ __global__ void totals_kernel(const int* __restrict__ counts, int n, BandSpec ba
   for (int view = 0; view < 3; ++view) {
     lens[view][i] = bands.view_band[view] < 0 ? 0 : prefix[bands.view_band[view] + 1];
   }
+  items[i] = (len_atm[i] + kAtmItems - 1) / kAtmItems;
   for (int band = 0; band < 3; ++band) {
     if (counts[3 * i + band] != 0) {
       atomicAdd(scalars + band, static_cast<unsigned long long>(counts[3 * i + band]));
@@ -336,6 +340,8 @@ NeighborGraph::NeighborGraph(cudaMemPool_t pool, cudaStream_t stream, Allocation
       counts_(pool, stream, counters),
       totals_(pool, stream, counters),
       row_ptr_(pool, stream, counters),
+      items_(pool, stream, counters),
+      item_prefix_(pool, stream, counters),
       edges_(pool, stream, counters),
       len_{DeviceBuffer<int>(pool, stream, counters), DeviceBuffer<int>(pool, stream, counters),
            DeviceBuffer<int>(pool, stream, counters)},
@@ -349,7 +355,7 @@ NeighborGraph::NeighborGraph(cudaMemPool_t pool, cudaStream_t stream, Allocation
       bin_start_(pool, stream, counters),
       sort_temp_(pool, stream, counters) {
   scalars_.resize(4);
-  host_scalars_.reserve(5);
+  host_scalars_.reserve(6);
 }
 
 void NeighborGraph::begin_build(const GeometryView& g, const BandSpec& bands) {
@@ -358,6 +364,8 @@ void NeighborGraph::begin_build(const GeometryView& g, const BandSpec& bands) {
   counts_.resize(3 * n);
   totals_.resize(n + 1);
   row_ptr_.resize(n + 1);
+  items_.resize(n + 1);
+  item_prefix_.resize(n + 1);
   for (auto& len : len_) len.resize(n);
   long long max_bits;
   const double max_r2 = DBL_MAX;
@@ -371,7 +379,7 @@ double NeighborGraph::finish_build(const GeometryView& g, const BandSpec& bands)
   const auto n = static_cast<std::size_t>(g.n);
   totals_kernel<<<(g.n + 1 + 255) / 256, 256, 0, stream_>>>(
       counts_.data(), g.n, bands, totals_.data(), len_[0].data(), len_[1].data(), len_[2].data(),
-      scalars_.data());
+      items_.data(), scalars_.data());
   VF_LAUNCH_CHECK(stream_);
   std::size_t temp_bytes = 0;
   VF_CUDA_CHECK(cub::DeviceScan::ExclusiveSum(nullptr, temp_bytes, totals_.data(), row_ptr_.data(),
@@ -379,13 +387,19 @@ double NeighborGraph::finish_build(const GeometryView& g, const BandSpec& bands)
   scan_temp_.resize(temp_bytes);
   VF_CUDA_CHECK(cub::DeviceScan::ExclusiveSum(scan_temp_.data(), temp_bytes, totals_.data(),
                                               row_ptr_.data(), static_cast<long long>(n + 1), stream_));
+  VF_CUDA_CHECK(cub::DeviceScan::ExclusiveSum(scan_temp_.data(), temp_bytes, items_.data(),
+                                              item_prefix_.data(), static_cast<long long>(n + 1),
+                                              stream_));
   scalars_.download_async(host_scalars_.data(), 4);
   copy_to_host_async(reinterpret_cast<const unsigned long long*>(row_ptr_.data() + n),
                      host_scalars_.data() + 4, 1, stream_);
+  copy_to_host_async(reinterpret_cast<const unsigned long long*>(item_prefix_.data() + n),
+                     host_scalars_.data() + 5, 1, stream_);
   VF_CUDA_CHECK(cudaStreamSynchronize(stream_));
 
   const unsigned long long* scalars = host_scalars_.data();
   total_edges_ = static_cast<std::int64_t>(scalars[4]);
+  atm_items_total_ = static_cast<std::int64_t>(scalars[5]);
   for (int v = 0; v < kViewCount; ++v) {
     view_edges_[v] = 0;
     for (int band = 0; band <= bands.view_band[v]; ++band) {

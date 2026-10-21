@@ -38,10 +38,10 @@ cpp-test:
 
 SANITIZER ?= compute-sanitizer
 sanitize:
-	$(SANITIZER) --tool memcheck --leak-check full --error-exitcode 99 $(PYTHON) tools/sanitizer_workload.py
-	$(SANITIZER) --tool racecheck --error-exitcode 99 $(PYTHON) tools/sanitizer_workload.py
-	$(SANITIZER) --tool synccheck --error-exitcode 99 $(PYTHON) tools/sanitizer_workload.py
-	$(SANITIZER) --tool initcheck --error-exitcode 99 $(PYTHON) tools/sanitizer_workload.py
+	$(SANITIZER) --tool memcheck --leak-check full --error-exitcode 99 $(PYTHON) tools/sanitizer_workload.py --atm
+	$(SANITIZER) --tool racecheck --error-exitcode 99 $(PYTHON) tools/sanitizer_workload.py --atm
+	$(SANITIZER) --tool synccheck --error-exitcode 99 $(PYTHON) tools/sanitizer_workload.py --atm
+	$(SANITIZER) --tool initcheck --error-exitcode 99 $(PYTHON) tools/sanitizer_workload.py --atm
 
 stubtest:
 	cd /tmp && $(PYTHON) -m mypy.stubtest vanderfast._native --allowlist $(CURDIR)/tests/stubtest_allowlist.txt

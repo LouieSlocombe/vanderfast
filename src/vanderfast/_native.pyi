@@ -35,6 +35,7 @@ class Context:
         reference_data: bytes | None = None,
         reference_identity: str = "",
         collect_timings: bool = False,
+        atm_items_per_launch: int = 0,
     ) -> None: ...
     def evaluate(
         self,

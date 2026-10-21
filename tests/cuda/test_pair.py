@@ -10,7 +10,7 @@ from support.fixtures import FixtureCase, all_cases
 
 from vanderfast import _oracle, resolve_parameters
 from vanderfast.data import parse_reference_tables
-from vanderfast.errors import InputError, UnsupportedFeatureError
+from vanderfast.errors import InputError
 from vanderfast.parameters import Cutoffs
 from vanderfast.testing import structures
 from vanderfast.units import INV_BOHR
@@ -18,7 +18,6 @@ from vanderfast.units import INV_BOHR
 pytestmark = pytest.mark.cuda
 
 PBE = resolve_parameters(method="pbe", damping="bj", atm=False)
-PBE_ATM = resolve_parameters(method="pbe", damping="bj", atm=True)
 
 PAIR_CASES = [c for c in all_cases() if not c.parameters.atm and c.known_issue is None]
 
@@ -160,12 +159,6 @@ def test_gradient_matches_finite_differences_of_gpu_energies() -> None:
         analytic, lambda h: position_gradient(energy, positions, h), 1e-10
     )
     assert ok, errors
-
-
-def test_atm_is_rejected_until_implemented() -> None:
-    ctx = nh.context([18, 18, 18], PBE_ATM)
-    with pytest.raises(UnsupportedFeatureError, match="ATM"):
-        nh.run(ctx, np.eye(3) * 6.0)
 
 
 def test_inactive_terms_give_zero() -> None:

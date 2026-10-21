@@ -20,7 +20,7 @@ FD_CUTOFFS = Cutoffs(cn=12.0, disp2=18.0, disp3=12.0)
 
 BACKENDS = [
     pytest.param((oracle_evaluator, PBE_ATM), id="oracle"),
-    pytest.param((cuda_evaluator, PBE), id="cuda", marks=pytest.mark.cuda),
+    pytest.param((cuda_evaluator, PBE_ATM), id="cuda", marks=pytest.mark.cuda),
 ]
 
 

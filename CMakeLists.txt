@@ -91,6 +91,7 @@ if(VANDERFAST_ENABLE_CUDA)
     src/cuda/k_cn.cu
     src/cuda/k_weights.cu
     src/cuda/k_pair.cu
+    src/cuda/k_atm.cu
     src/cuda/k_reduce.cu
     src/cuda/context.cu)
   target_include_directories(vanderfast_cuda PRIVATE "${PROJECT_SOURCE_DIR}/src")

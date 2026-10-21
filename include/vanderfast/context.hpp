@@ -22,6 +22,7 @@ struct ContextOptions {
   NeighborBuilder builder = NeighborBuilder::Auto;
   bool reject_coincident = true;
   bool collect_timings = false;
+  long long atm_items_per_launch = 0;  // 0: choose automatically
 };
 
 enum Property : unsigned {

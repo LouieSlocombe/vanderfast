@@ -5,9 +5,11 @@ Axilrod-Teller-Muto three-body term, for molecules and periodic systems. The
 numerical core is CUDA C++; the Python layer provides a NumPy API and an ASE
 calculator. Results are validated against simple-dftd3 v1.6.0.
 
-> **Status: under development.** The scientific specification, reference data,
-> NumPy oracle, and dftd3 fixtures are in place. The CUDA backend is being
-> built milestone by milestone (see `docs/`). No performance claims are made yet.
+> **Status: under development.** The CUDA backend evaluates D3(BJ) pair and
+> ATM energies, forces, and strain derivatives for molecules, periodic cells,
+> and slabs/wires, and agrees with simple-dftd3 v1.6.0 on every reference
+> fixture. Neighbour-list reuse, performance work, and packaging are in
+> progress. No performance claims are made yet.
 
 ## Requirements
 

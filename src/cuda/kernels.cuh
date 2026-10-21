@@ -33,6 +33,15 @@ void launch_weights(const ModelView& m, const GeometryView& g, const double* cn,
 void launch_pair(const GeometryView& g, const ModelView& m, const GraphView& graph, const double* w,
                  const double* dw, const AccumView& acc, cudaStream_t stream);
 
+// K4: ATM triangles for the work items [item_begin, item_begin + item_count).
+// ``partials`` holds 7 doubles per item of the launch; ``counters`` three
+// uint64 (candidates, accepted, C6-skipped).
+constexpr int kAtmItemWidth = 32;  // outer sites per work item
+void launch_atm(const GeometryView& g, const ModelView& m, const GraphView& graph,
+                const long long* item_prefix, long long item_begin, long long item_count,
+                const double* w, const double* dw, const AccumView& acc, double* partials,
+                unsigned long long* counters, cudaStream_t stream);
+
 // K5: CN-mediated gradient and virial from the accumulated dE/dCN.
 void launch_cn_reverse(const GeometryView& g, const ModelView& m, const GraphView& graph,
                        const AccumView& acc, cudaStream_t stream);

@@ -20,10 +20,9 @@ from vanderfast.units import INV_BOHR
 PBE_ATM = resolve_parameters(method="pbe", damping="bj", atm=True)
 PBE = resolve_parameters(method="pbe", damping="bj", atm=False)
 
-# The CUDA backend runs pair-only until the ATM kernel lands.
 BACKENDS = [
     pytest.param((oracle_evaluator, PBE_ATM), id="oracle"),
-    pytest.param((cuda_evaluator, PBE), id="cuda", marks=pytest.mark.cuda),
+    pytest.param((cuda_evaluator, PBE_ATM), id="cuda", marks=pytest.mark.cuda),
 ]
 
 Run = Callable[[Atoms], Evaluation]
