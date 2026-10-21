@@ -2,6 +2,8 @@
 
 from importlib.metadata import version
 
+from vanderfast.context import D3Context, D3Result
+from vanderfast.diagnostics import backend_info
 from vanderfast.errors import (
     ContextBusyError,
     CudaError,
@@ -24,6 +26,8 @@ __all__ = [
     "CudaUnavailableError",
     "Cutoffs",
     "D3BJParameters",
+    "D3Context",
+    "D3Result",
     "DeviceOutOfMemoryError",
     "InputError",
     "NativeExtensionMissingError",
@@ -33,5 +37,6 @@ __all__ = [
     "VanderfastError",
     "__version__",
     "available_methods",
+    "backend_info",
     "resolve_parameters",
 ]

@@ -45,13 +45,16 @@ def test_triangle_counts_and_energy_split_match_the_oracle(build) -> None:  # ty
     atoms = build()
     positions = atoms.positions * INV_BOHR
     cell = atoms.cell[:] * INV_BOHR if atoms.pbc.any() else None
-    ctx = nh.context(atoms.numbers, PBE_ATM, SHORT)
+    ctx = nh.context(atoms.numbers, PBE_ATM, SHORT, kernels="literal")
     result = nh.run(ctx, positions, cell, atoms.pbc)
     oracle = _oracle.evaluate(
         atoms.numbers, positions, parameters=PBE_ATM, cell=cell, pbc=atoms.pbc, cutoffs=SHORT
     )
     for key in ("atm_candidates", "atm_accepted", "atm_c6_skipped"):
         assert result["info"][key] == oracle.counts[key], key
+    # The canonical anchor meets every triangle once instead of three times.
+    canonical = nh.run(nh.context(atoms.numbers, PBE_ATM, SHORT), positions, cell, atoms.pbc)
+    assert 3 * canonical["info"]["atm_accepted"] == result["info"]["atm_accepted"]
     assert result["energy_atm"] == pytest.approx(oracle.energy_atm, rel=1e-12, abs=1e-18)
     assert result["energy_pair"] == pytest.approx(oracle.energy_pair, rel=1e-12, abs=1e-18)
 
@@ -98,7 +101,13 @@ def test_tiny_c6_triangles_are_skipped_in_every_path() -> None:
     )
     atoms = structures.equilateral_trimer(18, 3.5)
     positions = atoms.positions * INV_BOHR
-    ctx = nh.context(atoms.numbers, PBE_ATM, reference_data=bytes(blob), reference_identity="tiny")
+    ctx = nh.context(
+        atoms.numbers,
+        PBE_ATM,
+        reference_data=bytes(blob),
+        reference_identity="tiny",
+        kernels="literal",
+    )
     full = nh.run(ctx, positions)
     energy_only = nh.run(ctx, positions, gradient=False, virial=False)
     oracle = _oracle.evaluate(atoms.numbers, positions, parameters=PBE_ATM, tables=tiny)

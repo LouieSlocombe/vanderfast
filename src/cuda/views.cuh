@@ -48,16 +48,25 @@ struct GraphView {
   const int* len_cn;         // [N] row prefix length of the CN view
   const int* len_pair;       // [N] row prefix length of the pair view
   const int* len_atm;        // [N] row prefix length of the ATM view
+  const int* upper;          // [P] row-relative offsets of canonical upper ATM sites
+  const int* counts;         // [4N] per-row band counts; counts[4 i + 3] upper ATM sites
 };
 
 // Per-atom accumulation arena, reset once per evaluation.
 struct AccumView {
+  double* atm_split;  // [N] ATM energy split 1/3 per vertex (atomic energies only)
   double* grad;    // [3N] dE/dx
   double* g;       // [N] dE/dCN
   double* e_pair;  // [N]
   double* e_atm;   // [N]
   double* vir;     // [6N] SoA: xx, yy, zz, yz, xz, xy
   std::int32_t n;
+};
+
+// Species-contracted weights (optional; null in the literal variant).
+struct ContractedView {
+  const double* u;   // [N * S * kRefPad]
+  const double* du;  // [N * S * kRefPad], null for energy-only evaluations
 };
 
 }  // namespace vanderfast::cuda

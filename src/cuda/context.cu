@@ -166,6 +166,8 @@ struct D3Context::Impl {
     make(weights);
     make(dweights);
     make(atm_partials);
+    make(contracted);
+    make(dcontracted);
     make(atm_counters);
     make(species_dev);
     make(positions_dev);
@@ -196,6 +198,7 @@ struct D3Context::Impl {
     view.vir = base + 2 * n;
     view.g = base + 8 * n;
     view.grad = base + 9 * n;
+    view.atm_split = base + 12 * n;
     view.n = static_cast<std::int32_t>(n);
     return view;
   }
@@ -264,7 +267,7 @@ struct D3Context::Impl {
 
     timer.mark("neighbors");
     // K0b: reset every accumulator of this evaluation in one call.
-    arena.resize(12 * n);
+    arena.resize(13 * n);
     arena.zero_async();
     const cuda::AccumView accum = accum_view();
 
@@ -274,19 +277,29 @@ struct D3Context::Impl {
     dweights.resize(cuda::kRefPad * n);
     cuda::launch_cn(g, mv, gv, cn.data(), s);
     cuda::launch_weights(mv, g, cn.data(), weights.data(), derivatives ? dweights.data() : nullptr, s);
+    cuda::ContractedView cv{nullptr, nullptr};
+    if (optimized()) {
+      const std::size_t size = n * static_cast<std::size_t>(mv.n_species) * cuda::kRefPad;
+      contracted.resize(size);
+      dcontracted.resize(derivatives ? size : 0);
+      cuda::launch_contract(mv, g, weights.data(), derivatives ? dweights.data() : nullptr,
+                            contracted.data(), derivatives ? dcontracted.data() : nullptr, s);
+      cv = {contracted.data(), derivatives ? dcontracted.data() : nullptr};
+    }
 
     timer.mark("cn_weights");
     // K3: pair term.
     if (parameters.pair_active()) {
-      cuda::launch_pair(g, mv, gv, weights.data(), derivatives ? dweights.data() : nullptr, accum, s);
+      cuda::launch_pair(g, mv, gv, weights.data(), derivatives ? dweights.data() : nullptr, cv,
+                        accum, s);
     }
     timer.mark("pair");
     // K4: ATM triangles in bounded launches.
-    if (parameters.atm_active()) run_atm(g, mv, gv, derivatives, accum, result.info);
+    if (parameters.atm_active()) run_atm(g, mv, gv, cv, derivatives, want_atoms, accum, result.info);
     if (debug != nullptr) download_debug(*debug, derivatives, accum);
     timer.mark("atm");
     // K5: CN-mediated derivatives.
-    if (derivatives) cuda::launch_cn_reverse(g, mv, gv, accum, s);
+    if (derivatives) cuda::launch_cn_reverse(g, mv, gv, accum, optimized(), s);
 
     timer.mark("cn_reverse");
     // K6: reductions and transfers.
@@ -298,7 +311,10 @@ struct D3Context::Impl {
     }
     if (want_atoms) {
       host_atoms.reserve(2 * n);
-      cuda::copy_to_host_async(accum.e_pair, host_atoms.data(), 2 * n, s);
+      cuda::copy_to_host_async(accum.e_pair, host_atoms.data(), n, s);
+      // The canonical ATM kernel books each triangle to its anchor; the
+      // per-atom split (1/3 per vertex, as upstream) is accumulated separately.
+      cuda::copy_to_host_async(optimized() ? accum.atm_split : accum.e_atm, host_atoms.data() + n, n, s);
     }
     timer.mark("reduce");
     stream.synchronize();
@@ -345,7 +361,8 @@ struct D3Context::Impl {
                    const std::array<double, cuda::kViewCount>& radius, EvalInfo& info) {
     const std::size_t n = numbers.size();
     graph_valid = false;
-    const cuda::BandSpec bands = cuda::make_bands(radius);
+    cuda::BandSpec bands = cuda::make_bands(radius);
+    bands.canonical_atm = optimized() ? 1 : 0;
     const double rmax = std::max({radius[0], radius[1], radius[2]});
     cuda::ImageBox box;
     const std::array<int, 3> range = image_ranges(lattice, geometry.positions, n, rmax);
@@ -378,7 +395,8 @@ struct D3Context::Impl {
   }
 
   void run_atm(const cuda::GeometryView& g, const cuda::ModelView& mv, const cuda::GraphView& gv,
-               bool derivatives, const cuda::AccumView& accum, EvalInfo& info) {
+               const cuda::ContractedView& cv, bool derivatives, bool split_atoms,
+               const cuda::AccumView& accum, EvalInfo& info) {
     const long long items = graph.atm_items();
     if (items == 0) return;
     cudaStream_t s = stream.get();
@@ -395,9 +413,16 @@ struct D3Context::Impl {
     atm_counters.resize(3);
     atm_counters.zero_async();
     for (long long begin = 0; begin < items; begin += chunk) {
-      cuda::launch_atm(g, mv, gv, graph.atm_item_prefix(), begin, std::min(chunk, items - begin),
-                       weights.data(), derivatives ? dweights.data() : nullptr, accum,
-                       atm_partials.data(), atm_counters.data(), s);
+      const long long count = std::min(chunk, items - begin);
+      const double* dw = derivatives ? dweights.data() : nullptr;
+      if (optimized()) {
+        cuda::launch_atm_canonical(g, mv, gv, graph.atm_item_prefix(), begin, count, weights.data(),
+                                   dw, cv, accum, atm_partials.data(), atm_counters.data(),
+                                   split_atoms, s);
+      } else {
+        cuda::launch_atm(g, mv, gv, graph.atm_item_prefix(), begin, count, weights.data(), dw,
+                         accum, atm_partials.data(), atm_counters.data(), s);
+      }
     }
     host_counters.reserve(3);
     atm_counters.download_async(host_counters.data(), 3);
@@ -438,6 +463,7 @@ struct D3Context::Impl {
   }
 
   bool debug_derivatives = false;
+  bool optimized() const noexcept { return options.kernels == KernelVariant::Optimized; }
   std::vector<cuda::Event> events;
   bool graph_valid = false;
   std::vector<double> graph_positions;
@@ -463,6 +489,8 @@ struct D3Context::Impl {
   DeviceBuffer<double> weights;
   DeviceBuffer<double> dweights;
   DeviceBuffer<double> atm_partials;
+  DeviceBuffer<double> contracted;
+  DeviceBuffer<double> dcontracted;
   DeviceBuffer<unsigned long long> atm_counters;
   PinnedBuffer<unsigned long long> host_counters;
   DeviceBuffer<int> species_dev;

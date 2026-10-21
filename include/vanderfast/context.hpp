@@ -16,6 +16,11 @@ namespace vanderfast {
 
 enum class NeighborBuilder { Auto, BruteForce, CellBins };
 
+// Kernel formulations. ``Literal`` is the straightforward scatter baseline
+// kept for qualification; ``Optimized`` uses owner-only accumulation and the
+// canonical ATM anchor. Both evaluate the same sums.
+enum class KernelVariant { Optimized, Literal };
+
 struct ContextOptions {
   int device = 0;
   double skin = 0.0;  // bohr; enlarges candidate lists only
@@ -23,6 +28,7 @@ struct ContextOptions {
   bool reject_coincident = true;
   bool collect_timings = false;
   long long atm_items_per_launch = 0;  // 0: choose automatically
+  KernelVariant kernels = KernelVariant::Optimized;
 };
 
 enum Property : unsigned {

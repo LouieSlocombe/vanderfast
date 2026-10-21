@@ -37,6 +37,18 @@ __device__ __forceinline__ void decode_image(long long m, const ImageBox& box, i
   c = static_cast<int>(rest - m1 * s2) - box.range[2];
 }
 
+// Canonical ATM anchor: site (j, n) is "upper" relative to centre (i, 0) when
+// j > i, or j == i and n is lexicographically positive. The order is
+// translation compatible, so each triangle has exactly one anchor at which
+// both other vertices are upper.
+__device__ __forceinline__ bool upper_site(int i, int j, int a, int b, int c) {
+  return j > i || (j == i && (a > 0 || (a == 0 && (b > 0 || (b == 0 && c > 0)))));
+}
+
+__device__ __forceinline__ bool in_atm_view(int band, const BandSpec& bands) {
+  return band >= 0 && band <= bands.view_band[2];
+}
+
 __device__ __forceinline__ int band_of(double r2, const BandSpec& bands) {
   if (bands.n_bands > 0 && r2 <= bands.radius2[0]) return 0;
   if (bands.n_bands > 1 && r2 <= bands.radius2[1]) return 1;
@@ -65,7 +77,7 @@ __global__ void count_kernel(GeometryView g, ImageBox box, BandSpec bands, int* 
   const int i = warp;
   const math::Vec3 xi = load(g.pos, i);
   const long long total = box.images * g.n;
-  int count0 = 0, count1 = 0, count2 = 0;
+  int count0 = 0, count1 = 0, count2 = 0, count3 = 0;
   double min_r2 = DBL_MAX;
   for (long long t = lane; t < total; t += kWarp) {
     int j, a, b, c;
@@ -75,17 +87,20 @@ __global__ void count_kernel(GeometryView g, ImageBox box, BandSpec bands, int* 
     count0 += band == 0;
     count1 += band == 1;
     count2 += band == 2;
+    count3 += in_atm_view(band, bands) && upper_site(i, j, a, b, c);
   }
   for (int offset = kWarp / 2; offset > 0; offset /= 2) {
     count0 += __shfl_down_sync(kFullMask, count0, offset);
     count1 += __shfl_down_sync(kFullMask, count1, offset);
     count2 += __shfl_down_sync(kFullMask, count2, offset);
+    count3 += __shfl_down_sync(kFullMask, count3, offset);
     min_r2 = fmin(min_r2, __shfl_down_sync(kFullMask, min_r2, offset));
   }
   if (lane == 0) {
-    counts[3 * i] = count0;
-    counts[3 * i + 1] = count1;
-    counts[3 * i + 2] = count2;
+    counts[4 * i] = count0;
+    counts[4 * i + 1] = count1;
+    counts[4 * i + 2] = count2;
+    counts[4 * i + 3] = count3;
     atomicMin(scalars + 3, static_cast<unsigned long long>(__double_as_longlong(min_r2)));
   }
 }
@@ -103,31 +118,55 @@ __global__ void totals_kernel(const int* __restrict__ counts, int n, BandSpec ba
     return;
   }
   int prefix[4] = {0, 0, 0, 0};
-  for (int band = 0; band < 3; ++band) prefix[band + 1] = prefix[band] + counts[3 * i + band];
+  for (int band = 0; band < 3; ++band) prefix[band + 1] = prefix[band] + counts[4 * i + band];
   totals[i] = prefix[3];
   int* lens[3] = {len_cn, len_pair, len_atm};
   for (int view = 0; view < 3; ++view) {
     lens[view][i] = bands.view_band[view] < 0 ? 0 : prefix[bands.view_band[view] + 1];
   }
-  items[i] = (len_atm[i] + kAtmItems - 1) / kAtmItems;
+  const int outer = bands.canonical_atm ? counts[4 * i + 3] : len_atm[i];
+  items[i] = (outer + kAtmItems - 1) / kAtmItems;
   for (int band = 0; band < 3; ++band) {
-    if (counts[3 * i + band] != 0) {
-      atomicAdd(scalars + band, static_cast<unsigned long long>(counts[3 * i + band]));
+    if (counts[4 * i + band] != 0) {
+      atomicAdd(scalars + band, static_cast<unsigned long long>(counts[4 * i + band]));
     }
   }
 }
 
+// Warp-aggregated append of one candidate per lane into its band, recording
+// upper ATM sites (row-relative edge offsets) in the canonical-anchor list.
+__device__ __forceinline__ void append(int band, int4 record, bool up, long long row, unsigned below,
+                                       long long& cursor0, long long& cursor1, long long& cursor2,
+                                       long long& cursor_up, int4* __restrict__ edges,
+                                       int* __restrict__ upper) {
+  const unsigned mask0 = __ballot_sync(kFullMask, band == 0);
+  const unsigned mask1 = __ballot_sync(kFullMask, band == 1);
+  const unsigned mask2 = __ballot_sync(kFullMask, band == 2);
+  const unsigned mask_up = __ballot_sync(kFullMask, up);
+  long long position = -1;
+  if (band == 0) position = cursor0 + __popc(mask0 & below);
+  if (band == 1) position = cursor1 + __popc(mask1 & below);
+  if (band == 2) position = cursor2 + __popc(mask2 & below);
+  if (position >= 0) edges[position] = record;
+  if (up) upper[row + cursor_up + __popc(mask_up & below)] = static_cast<int>(position - row);
+  cursor0 += __popc(mask0);
+  cursor1 += __popc(mask1);
+  cursor2 += __popc(mask2);
+  cursor_up += __popc(mask_up);
+}
+
 __global__ void fill_kernel(GeometryView g, ImageBox box, BandSpec bands,
                             const long long* __restrict__ row_ptr, const int* __restrict__ counts,
-                            int4* __restrict__ edges) {
+                            int4* __restrict__ edges, int* __restrict__ upper) {
   const int warp = static_cast<int>((blockIdx.x * blockDim.x + threadIdx.x) / kWarp);
   const int lane = static_cast<int>(threadIdx.x % kWarp);
   if (warp >= g.n) return;
   const int i = warp;
   const math::Vec3 xi = load(g.pos, i);
   long long cursor0 = row_ptr[i];
-  long long cursor1 = cursor0 + counts[3 * i];
-  long long cursor2 = cursor1 + counts[3 * i + 1];
+  long long cursor1 = cursor0 + counts[4 * i];
+  long long cursor2 = cursor1 + counts[4 * i + 1];
+  long long cursor_up = 0;
   const long long total = box.images * g.n;
   const unsigned below = (1u << lane) - 1u;
   for (long long base = 0; base < total; base += kWarp) {
@@ -135,16 +174,9 @@ __global__ void fill_kernel(GeometryView g, ImageBox box, BandSpec bands,
     int j = 0, a = 0, b = 0, c = 0;
     double r2;
     const int band = t < total ? classify(g, box, bands, i, xi, t, j, a, b, c, r2) : -1;
-    const unsigned mask0 = __ballot_sync(kFullMask, band == 0);
-    const unsigned mask1 = __ballot_sync(kFullMask, band == 1);
-    const unsigned mask2 = __ballot_sync(kFullMask, band == 2);
     const int4 record = make_int4(j, a, b, c);
-    if (band == 0) edges[cursor0 + __popc(mask0 & below)] = record;
-    if (band == 1) edges[cursor1 + __popc(mask1 & below)] = record;
-    if (band == 2) edges[cursor2 + __popc(mask2 & below)] = record;
-    cursor0 += __popc(mask0);
-    cursor1 += __popc(mask1);
-    cursor2 += __popc(mask2);
+    append(band, record, in_atm_view(band, bands) && upper_site(i, j, a, b, c), row_ptr[i], below,
+           cursor0, cursor1, cursor2, cursor_up, edges, upper);
   }
 }
 
@@ -235,7 +267,7 @@ __global__ void cell_count_kernel(GeometryView g, CellGrid grid, BandSpec bands,
   const int i = warp;
   const math::Vec3 xi = load(g.pos, i);
   const int4 wi = wrap[i];
-  int count0 = 0, count1 = 0, count2 = 0;
+  int count0 = 0, count1 = 0, count2 = 0, count3 = 0;
   double min_r2 = DBL_MAX;
   walk_stencil(grid, key[i], [&](int bin, int s0, int s1, int s2) {
     for (int t = bin_start[bin] + lane; t < bin_start[bin + 1]; t += kWarp) {
@@ -251,18 +283,21 @@ __global__ void cell_count_kernel(GeometryView g, CellGrid grid, BandSpec bands,
       count0 += band == 0;
       count1 += band == 1;
       count2 += band == 2;
+      count3 += in_atm_view(band, bands) && upper_site(i, j, a, b, c);
     }
   });
   for (int offset = kWarp / 2; offset > 0; offset /= 2) {
     count0 += __shfl_down_sync(kFullMask, count0, offset);
     count1 += __shfl_down_sync(kFullMask, count1, offset);
     count2 += __shfl_down_sync(kFullMask, count2, offset);
+    count3 += __shfl_down_sync(kFullMask, count3, offset);
     min_r2 = fmin(min_r2, __shfl_down_sync(kFullMask, min_r2, offset));
   }
   if (lane == 0) {
-    counts[3 * i] = count0;
-    counts[3 * i + 1] = count1;
-    counts[3 * i + 2] = count2;
+    counts[4 * i] = count0;
+    counts[4 * i + 1] = count1;
+    counts[4 * i + 2] = count2;
+    counts[4 * i + 3] = count3;
     atomicMin(scalars + 3, static_cast<unsigned long long>(__double_as_longlong(min_r2)));
   }
 }
@@ -271,7 +306,8 @@ __global__ void cell_fill_kernel(GeometryView g, CellGrid grid, BandSpec bands,
                                  const int* __restrict__ key, const int* __restrict__ sorted_atom,
                                  const int4* __restrict__ wrap, const int* __restrict__ bin_start,
                                  const long long* __restrict__ row_ptr,
-                                 const int* __restrict__ counts, int4* __restrict__ edges) {
+                                 const int* __restrict__ counts, int4* __restrict__ edges,
+                                 int* __restrict__ upper) {
   const int warp = static_cast<int>((blockIdx.x * blockDim.x + threadIdx.x) / kWarp);
   const int lane = static_cast<int>(threadIdx.x % kWarp);
   if (warp >= g.n) return;
@@ -279,8 +315,9 @@ __global__ void cell_fill_kernel(GeometryView g, CellGrid grid, BandSpec bands,
   const math::Vec3 xi = load(g.pos, i);
   const int4 wi = wrap[i];
   long long cursor0 = row_ptr[i];
-  long long cursor1 = cursor0 + counts[3 * i];
-  long long cursor2 = cursor1 + counts[3 * i + 1];
+  long long cursor1 = cursor0 + counts[4 * i];
+  long long cursor2 = cursor1 + counts[4 * i + 1];
+  long long cursor_up = 0;
   const unsigned below = (1u << lane) - 1u;
   walk_stencil(grid, key[i], [&](int bin, int s0, int s1, int s2) {
     const int start = bin_start[bin];
@@ -299,15 +336,9 @@ __global__ void cell_fill_kernel(GeometryView g, CellGrid grid, BandSpec bands,
           band = band_of(r2, bands);
         }
       }
-      const unsigned mask0 = __ballot_sync(kFullMask, band == 0);
-      const unsigned mask1 = __ballot_sync(kFullMask, band == 1);
-      const unsigned mask2 = __ballot_sync(kFullMask, band == 2);
-      if (band == 0) edges[cursor0 + __popc(mask0 & below)] = record;
-      if (band == 1) edges[cursor1 + __popc(mask1 & below)] = record;
-      if (band == 2) edges[cursor2 + __popc(mask2 & below)] = record;
-      cursor0 += __popc(mask0);
-      cursor1 += __popc(mask1);
-      cursor2 += __popc(mask2);
+      const bool up = in_atm_view(band, bands) &&
+                      upper_site(i, record.x, record.y, record.z, record.w);
+      append(band, record, up, row_ptr[i], below, cursor0, cursor1, cursor2, cursor_up, edges, upper);
     }
   });
 }
@@ -345,6 +376,7 @@ NeighborGraph::NeighborGraph(cudaMemPool_t pool, cudaStream_t stream, Allocation
       edges_(pool, stream, counters),
       len_{DeviceBuffer<int>(pool, stream, counters), DeviceBuffer<int>(pool, stream, counters),
            DeviceBuffer<int>(pool, stream, counters)},
+      upper_(pool, stream, counters),
       scalars_(pool, stream, counters),
       scan_temp_(pool, stream, counters),
       bin_key_(pool, stream, counters),
@@ -361,7 +393,7 @@ NeighborGraph::NeighborGraph(cudaMemPool_t pool, cudaStream_t stream, Allocation
 void NeighborGraph::begin_build(const GeometryView& g, const BandSpec& bands) {
   bands_ = bands;
   const auto n = static_cast<std::size_t>(g.n);
-  counts_.resize(3 * n);
+  counts_.resize(4 * n);
   totals_.resize(n + 1);
   row_ptr_.resize(n + 1);
   items_.resize(n + 1);
@@ -410,6 +442,7 @@ double NeighborGraph::finish_build(const GeometryView& g, const BandSpec& bands)
   const long long bits = static_cast<long long>(scalars[3]);
   std::memcpy(&min_r2, &bits, sizeof(min_r2));
   edges_.resize(static_cast<std::size_t>(total_edges_));
+  upper_.resize(static_cast<std::size_t>(total_edges_));
   return min_r2;
 }
 
@@ -422,7 +455,8 @@ double NeighborGraph::build_brute_force(const GeometryView& g, const ImageBox& b
   const double min_r2 = finish_build(g, bands);
   if (total_edges_ > 0) {
     fill_kernel<<<warp_blocks(g.n), threads, 0, stream_>>>(g, box, bands, row_ptr_.data(),
-                                                           counts_.data(), edges_.data());
+                                                           counts_.data(), edges_.data(),
+                                                           upper_.data());
     VF_LAUNCH_CHECK(stream_);
   }
   return min_r2;
@@ -465,7 +499,7 @@ double NeighborGraph::build_cell_bins(const GeometryView& g, const CellGrid& gri
   if (total_edges_ > 0) {
     cell_fill_kernel<<<warp_blocks(g.n), threads, 0, stream_>>>(
         g, grid, bands, bin_key_.data(), sorted_atom_.data(), wrap_.data(), bin_start_.data(),
-        row_ptr_.data(), counts_.data(), edges_.data());
+        row_ptr_.data(), counts_.data(), edges_.data(), upper_.data());
     VF_LAUNCH_CHECK(stream_);
   }
   return min_r2;
@@ -473,7 +507,7 @@ double NeighborGraph::build_cell_bins(const GeometryView& g, const CellGrid& gri
 
 GraphView NeighborGraph::view() const noexcept {
   return {row_ptr_.data(), edges_.data(), len_[kViewCn].data(), len_[kViewPair].data(),
-          len_[kViewAtm].data()};
+          len_[kViewAtm].data(), upper_.data(), counts_.data()};
 }
 
 void NeighborGraph::download(std::vector<long long>& row_ptr, std::vector<int4>& edges) const {

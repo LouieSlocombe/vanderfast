@@ -217,7 +217,8 @@ PYBIND11_MODULE(_native, m) {
                        double alp, double cutoff_cn, double cutoff_disp2, double cutoff_disp3,
                        int device, double skin, const std::string& builder,
                        const py::object& reference_data, const std::string& reference_identity,
-                       bool collect_timings, long long atm_items_per_launch) {
+                       bool collect_timings, long long atm_items_per_launch,
+                       const std::string& kernels) {
              if (numbers.ndim() != 1) {
                throw Error(ErrorCode::InvalidArgument, "numbers must be one-dimensional");
              }
@@ -232,6 +233,13 @@ PYBIND11_MODULE(_native, m) {
                throw Error(ErrorCode::InvalidArgument, "atm_items_per_launch must be >= 0");
              }
              options.atm_items_per_launch = atm_items_per_launch;
+             if (kernels == "optimized") {
+               options.kernels = KernelVariant::Optimized;
+             } else if (kernels == "literal") {
+               options.kernels = KernelVariant::Literal;
+             } else {
+               throw Error(ErrorCode::InvalidArgument, "kernels must be 'optimized' or 'literal'");
+             }
              std::shared_ptr<const ReferenceData> reference = ReferenceData::embedded();
              if (!reference_data.is_none()) {
                const std::string blob = reference_data.cast<py::bytes>();
@@ -246,7 +254,8 @@ PYBIND11_MODULE(_native, m) {
            py::arg("cutoff_disp2"), py::arg("cutoff_disp3"), py::arg("device") = 0,
            py::arg("skin") = 0.0, py::arg("builder") = "auto",
            py::arg("reference_data") = py::none(), py::arg("reference_identity") = "",
-           py::arg("collect_timings") = false, py::arg("atm_items_per_launch") = 0)
+           py::arg("collect_timings") = false, py::arg("atm_items_per_launch") = 0,
+           py::arg("kernels") = "optimized")
       .def(
           "evaluate",
           [](D3Context& context, const DoubleArray& positions, const DoubleArray& cell,

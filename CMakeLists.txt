@@ -90,6 +90,7 @@ if(VANDERFAST_ENABLE_CUDA)
     src/cuda/k_geometry.cu
     src/cuda/k_cn.cu
     src/cuda/k_weights.cu
+    src/cuda/k_contract.cu
     src/cuda/k_pair.cu
     src/cuda/k_atm.cu
     src/cuda/k_reduce.cu

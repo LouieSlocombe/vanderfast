@@ -237,6 +237,202 @@ __global__ void atm_kernel(GeometryView g, ModelView m, GraphView graph,
   }
 }
 
+
+template <int M>
+__device__ __forceinline__ double dot(const double* x, const double* y, int n) {
+  double sum = 0.0;
+#pragma unroll
+  for (int b = 0; b < M; ++b) {
+    if (b >= n) break;
+    sum += x[b] * y[b];
+  }
+  return sum;
+}
+
+// (r0 / r1)^(alp_eff / 3) from y = r0^2 / r1^2. For the default exponent 16 it
+// is y^(8/3) = y^2 cbrt(y^2), which avoids pow.
+__device__ __forceinline__ double atm_power(double y, const ModelView& m) {
+  if (m.alp_eff == 16.0) {
+    const double y2 = y * y;
+    return y2 * cbrt(y2);
+  }
+  return pow(y, 0.5 * m.alp3);
+}
+
+template <int M, bool Derivatives, bool Split>
+__global__ void atm_canonical_kernel(GeometryView g, ModelView m, GraphView graph,
+                                     const long long* __restrict__ item_prefix, long long item_begin,
+                                     long long item_count, const double* __restrict__ w,
+                                     const double* __restrict__ dw, ContractedView cv,
+                                     AccumView acc, double* __restrict__ partials,
+                                     unsigned long long* __restrict__ counters) {
+  const long long local_item = global_warp();
+  if (local_item >= item_count) return;
+  const long long item = item_begin + local_item;
+  int lo = 0;
+  int hi = g.n;
+  while (hi - lo > 1) {
+    const int mid = (lo + hi) / 2;
+    if (item_prefix[mid] <= item) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  const int i = lo;
+  const int lane = lane_id();
+  const int a = static_cast<int>(item - item_prefix[i]) * kWarpSize + lane;
+  const long long row = graph.row_ptr[i];
+  const int k = graph.counts[4 * i + 3];
+  const int* upper = graph.upper + row;
+  const math::Vec3 xi = position(g, i);
+  const int si = species(g, i);
+  const int S = m.n_species;
+  const double* ui = cv.u + static_cast<long long>(i) * S * kRefPad;
+  const double* dui = Derivatives ? cv.du + static_cast<long long>(i) * S * kRefPad : nullptr;
+
+  double energy = 0.0;
+  double g_i = 0.0;
+  math::Vec3 grad_i{0.0, 0.0, 0.0};
+  Sym6 vir;
+  unsigned long long candidates = 0;
+  unsigned long long accepted = 0;
+  unsigned long long c6_skipped = 0;
+  double g_u = 0.0;
+  math::Vec3 grad_u{0.0, 0.0, 0.0};
+  double e_u = 0.0;
+  int ju = 0;
+  bool valid_u = false;
+  math::Vec3 diu{0.0, 0.0, 0.0};
+  double r2iu = 0.0;
+  if (a < k) {
+    const int4 edge = graph.edges[row + upper[a]];
+    ju = edge.x;
+    diu = edge_displacement(g, xi, edge);
+    r2iu = math::norm2(diu);
+    valid_u = screened(r2iu, m.disp3_cutoff2);
+  }
+  if (valid_u) {
+    const int su = species(g, ju);
+    const int nref_u = m.nref[su];
+    const double* wu = w + ju * kRefPad;
+    const double* dwu = Derivatives ? dw + ju * kRefPad : nullptr;
+    const double c6iu = dot<M>(ui + su * kRefPad, wu, nref_u);
+    const double dc6iu_i = Derivatives ? dot<M>(dui + su * kRefPad, wu, nref_u) : 0.0;
+    const double dc6iu_u = Derivatives ? dot<M>(ui + su * kRefPad, dwu, nref_u) : 0.0;
+    const double* uu = cv.u + static_cast<long long>(ju) * S * kRefPad;
+    const double* duu = Derivatives ? cv.du + static_cast<long long>(ju) * S * kRefPad : nullptr;
+    const double r0iu = m.pair[si * S + su].r0_atm;
+    for (int t = a + 1; t < k; ++t) {
+      const int4 edge = graph.edges[row + upper[t]];
+      const int kv = edge.x;
+      const math::Vec3 div = edge_displacement(g, xi, edge);
+      const double r2iv = math::norm2(div);
+      if (!screened(r2iv, m.disp3_cutoff2)) continue;
+      candidates += 1;
+      const math::Vec3 duv{div.x - diu.x, div.y - diu.y, div.z - diu.z};
+      const double r2uv = math::norm2(duv);
+      if (!screened(r2uv, m.disp3_cutoff2)) continue;
+      const int sv = species(g, kv);
+      const int nref_v = m.nref[sv];
+      const double* wv = w + kv * kRefPad;
+      const double c6iv = dot<M>(ui + sv * kRefPad, wv, nref_v);
+      const double c6uv = dot<M>(uu + sv * kRefPad, wv, nref_v);
+      if (fabs(c6iu) < DBL_EPSILON || fabs(c6iv) < DBL_EPSILON || fabs(c6uv) < DBL_EPSILON) {
+        c6_skipped += 1;
+        continue;
+      }
+      accepted += 1;
+      const double r0 = r0iu * m.pair[si * S + sv].r0_atm * m.pair[su * S + sv].r0_atm;
+      const double r2 = r2iu * r2iv * r2uv;
+      const double r1 = sqrt(r2);
+      const double r3 = r2 * r1;
+      const double r5 = r3 * r2;
+      const double q = 6.0 * atm_power(r0 * r0 / r2, m);
+      const double fdmp = 1.0 / (1.0 + q);
+      const double pa = r2iu + r2uv - r2iv;
+      const double pb = r2iu - r2uv + r2iv;
+      const double pc = -r2iu + r2uv + r2iv;
+      const double abc = pa * pb * pc;
+      const double ang = 0.375 * abc / r5 + 1.0 / r3;
+      const double pre = m.s9 * sqrt(fabs(c6iu * c6iv * c6uv));
+      const double e = pre * ang * fdmp;
+      energy += e;
+      if (Split) {
+        const double third = e / 3.0;
+        e_u += third;
+        atomicAdd(acc.atm_split + kv, third);
+      }
+      if (Derivatives) {
+        const double* dwv = dw + kv * kRefPad;
+        const double dc6iv_i = dot<M>(dui + sv * kRefPad, wv, nref_v);
+        const double dc6iv_v = dot<M>(ui + sv * kRefPad, dwv, nref_v);
+        const double dc6uv_u = dot<M>(duu + sv * kRefPad, wv, nref_v);
+        const double dc6uv_v = dot<M>(uu + sv * kRefPad, dwv, nref_v);
+        const double dfac = fdmp * fdmp * (0.5 * m.alp3) * q;
+        auto partial = [&](double x, double dp) {
+          const double dang = 0.375 * (dp / r5 - 2.5 * abc / (r5 * x)) - 1.5 / (r3 * x);
+          return 2.0 * pre * (dang * fdmp + ang * dfac / x);
+        };
+        const double s_iu = partial(r2iu, pb * pc + pa * pc - pa * pb);
+        const double s_iv = partial(r2iv, -pb * pc + pa * pc + pa * pb);
+        const double s_uv = partial(r2uv, pb * pc - pa * pc + pa * pb);
+        const math::Vec3 g_iu{s_iu * diu.x, s_iu * diu.y, s_iu * diu.z};
+        const math::Vec3 g_iv{s_iv * div.x, s_iv * div.y, s_iv * div.z};
+        const math::Vec3 g_uv{s_uv * duv.x, s_uv * duv.y, s_uv * duv.z};
+        grad_i.x -= g_iu.x + g_iv.x;
+        grad_i.y -= g_iu.y + g_iv.y;
+        grad_i.z -= g_iu.z + g_iv.z;
+        grad_u.x += g_iu.x - g_uv.x;
+        grad_u.y += g_iu.y - g_uv.y;
+        grad_u.z += g_iu.z - g_uv.z;
+        atomic_add3(acc.grad + 3 * kv, {g_iv.x + g_uv.x, g_iv.y + g_uv.y, g_iv.z + g_uv.z});
+        vir.add_outer(diu, g_iu);
+        vir.add_outer(div, g_iv);
+        vir.add_outer(duv, g_uv);
+        const double half = 0.5 * e;
+        g_i += half * (dc6iu_i / c6iu + dc6iv_i / c6iv);
+        g_u += half * (dc6iu_u / c6iu + dc6uv_u / c6uv);
+        atomicAdd(acc.g + kv, half * (dc6iv_v / c6iv + dc6uv_v / c6uv));
+      }
+    }
+  }
+  if (Derivatives && valid_u) {
+    atomic_add3(acc.grad + 3 * ju, grad_u);
+    atomicAdd(acc.g + ju, g_u);
+  }
+  if (Split && valid_u) atomicAdd(acc.atm_split + ju, e_u);
+
+  double* out = partials + 7 * local_item;
+  energy = warp_sum(energy);
+  if (lane == 0) {
+    out[0] = energy;
+    if (Split) atomicAdd(acc.atm_split + i, energy / 3.0);
+  }
+  if (Derivatives) {
+    for (int c = 0; c < 6; ++c) {
+      const double total = warp_sum(vir.v[c]);
+      if (lane == 0) out[1 + c] = total;
+    }
+    g_i = warp_sum(g_i);
+    const math::Vec3 total{warp_sum(grad_i.x), warp_sum(grad_i.y), warp_sum(grad_i.z)};
+    if (lane == 0) {
+      atomicAdd(acc.g + i, g_i);
+      atomic_add3(acc.grad + 3 * i, total);
+    }
+  } else if (lane == 0) {
+    for (int c = 0; c < 6; ++c) out[1 + c] = 0.0;
+  }
+  candidates = warp_sum_u64(candidates);
+  accepted = warp_sum_u64(accepted);
+  c6_skipped = warp_sum_u64(c6_skipped);
+  if (lane == 0) {
+    if (candidates != 0) atomicAdd(counters, candidates);
+    if (accepted != 0) atomicAdd(counters + 1, accepted);
+    if (c6_skipped != 0) atomicAdd(counters + 2, c6_skipped);
+  }
+}
+
 // Add the item partials of one launch to the per-centre accumulators in item
 // order (deterministic).
 __global__ void atm_reduce_kernel(const long long* __restrict__ item_prefix, int n,
@@ -273,7 +469,46 @@ void launch_atm_m(const GeometryView& g, const ModelView& m, const GraphView& gr
   }
 }
 
+template <int M>
+void launch_atm_canonical_m(const GeometryView& g, const ModelView& m, const GraphView& graph,
+                            const long long* item_prefix, long long item_begin, long long item_count,
+                            const double* w, const double* dw, const ContractedView& cv,
+                            const AccumView& acc, double* partials, unsigned long long* counters,
+                            bool split, cudaStream_t stream) {
+  const auto blocks = static_cast<unsigned>((item_count + kWarpsPerBlock - 1) / kWarpsPerBlock);
+#define VF_ATM_CANONICAL(D, SPLIT)                                                         \
+  atm_canonical_kernel<M, D, SPLIT><<<blocks, kWarpBlock, 0, stream>>>(                    \
+      g, m, graph, item_prefix, item_begin, item_count, w, dw, cv, acc, partials, counters)
+  if (dw != nullptr && split) {
+    VF_ATM_CANONICAL(true, true);
+  } else if (dw != nullptr) {
+    VF_ATM_CANONICAL(true, false);
+  } else if (split) {
+    VF_ATM_CANONICAL(false, true);
+  } else {
+    VF_ATM_CANONICAL(false, false);
+  }
+#undef VF_ATM_CANONICAL
+}
+
 }  // namespace
+
+void launch_atm_canonical(const GeometryView& g, const ModelView& m, const GraphView& graph,
+                          const long long* item_prefix, long long item_begin, long long item_count,
+                          const double* w, const double* dw, const ContractedView& cv,
+                          const AccumView& acc, double* partials, unsigned long long* counters,
+                          bool split_atoms, cudaStream_t stream) {
+  if (g.n == 0 || item_count == 0) return;
+  dispatch_max_nref(m.max_nref, [&](auto max_nref) {
+    launch_atm_canonical_m<decltype(max_nref)::value>(g, m, graph, item_prefix, item_begin,
+                                                      item_count, w, dw, cv, acc, partials,
+                                                      counters, split_atoms, stream);
+  });
+  VF_LAUNCH_CHECK(stream);
+  atm_reduce_kernel<<<(g.n + 127) / 128, 128, 0, stream>>>(item_prefix, g.n, item_begin, item_count,
+                                                           partials, acc);
+  VF_LAUNCH_CHECK(stream);
+}
 
 void launch_atm(const GeometryView& g, const ModelView& m, const GraphView& graph,
                 const long long* item_prefix, long long item_begin, long long item_count,

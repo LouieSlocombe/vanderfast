@@ -17,6 +17,7 @@ struct BandSpec {
   int n_bands = 0;
   double radius2[3] = {0.0, 0.0, 0.0};
   int view_band[kViewCount] = {-1, -1, -1};  // -1: view inactive
+  int canonical_atm = 0;  // ATM work items over upper sites only
 };
 
 struct ImageBox {
@@ -77,6 +78,7 @@ class NeighborGraph {
   DeviceBuffer<long long> item_prefix_;
   DeviceBuffer<int4> edges_;
   DeviceBuffer<int> len_[kViewCount];
+  DeviceBuffer<int> upper_;
   DeviceBuffer<unsigned long long> scalars_;  // band totals[3], min r2 bits
   DeviceBuffer<unsigned char> scan_temp_;
   DeviceBuffer<int> bin_key_;
