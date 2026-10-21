@@ -62,6 +62,25 @@ def test_results_are_cached_and_charges_do_not_invalidate() -> None:
     assert native.evaluations == count + 1
 
 
+def test_forces_on_a_three_dimensional_cell_also_provide_stress() -> None:
+    atoms = structures.rocksalt_primitive()
+    calc = D3Calculator(method="pbe", damping="bj", atm=True, cutoff=SHORT)
+    atoms.calc = calc
+    atoms.get_forces()
+    assert calc.evaluations == 1
+    stress = atoms.get_stress()
+    assert calc.evaluations == 1
+    direct = D3Context(atoms.numbers, calc.resolved_parameters, cutoff=SHORT).evaluate(
+        atoms.positions, cell=atoms.cell[:], pbc=True, properties=("stress",)
+    )
+    assert direct.stress is not None
+    np.testing.assert_array_equal(stress, direct.stress)
+    slab = structures.graphene_slab()
+    slab.calc = D3Calculator(method="pbe", damping="bj", atm=False, cutoff=SHORT)
+    slab.get_forces()
+    assert "stress" not in slab.calc.results
+
+
 def test_stress_is_not_implemented_without_three_dimensional_pbc() -> None:
     atoms = structures.water_dimer()
     atoms.calc = D3Calculator(method="pbe", damping="bj", atm=True)

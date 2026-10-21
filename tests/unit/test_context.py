@@ -154,6 +154,8 @@ def test_parameter_and_cutoff_updates_reach_the_native_context() -> None:
     assert isinstance(native, oracle_native.Context)
     assert native.neighbor_invalidations == 1
     assert native.cutoffs.disp2 == 5.0 / BOHR
+    context.invalidate_neighbors()
+    assert native.neighbor_invalidations == 2
     with pytest.raises(ParameterError):
         context.set_parameters({"s6": 1.0})  # type: ignore[arg-type]
 

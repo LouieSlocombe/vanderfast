@@ -40,11 +40,11 @@ def test_more_properties_run_only_the_missing_path() -> None:
     assert "forces" not in calc.results
     atoms.get_forces()
     assert calc.evaluations == 2
+    # On a 3D cell the forces request already produced the stress.
     atoms.get_stress()
-    assert calc.evaluations == 3
     atoms.get_potential_energy()
     atoms.get_forces()
-    assert calc.evaluations == 3
+    assert calc.evaluations == 2
 
 
 def test_positions_reuse_the_context() -> None:

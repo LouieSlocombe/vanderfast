@@ -167,6 +167,10 @@ class D3Calculator(Calculator):
             msg = "stress is only available for three-dimensional periodic cells"
             raise PropertyNotImplementedError(msg)
         want_forces = "forces" in properties or want_stress
+        # On a 3D cell the virial costs a few percent of a force evaluation, so
+        # compute stress with forces: ASE asks for them in separate calls, and
+        # NPT dynamics would otherwise pay for two full evaluations per step.
+        want_stress = want_stress or (want_forces and bool(pbc.all()))
         cell = atoms.cell[:] if pbc.any() else None
         if self.parameters["backend"] == "cuda":
             requested = ["energy"] + ["forces"] * want_forces + ["stress"] * want_stress

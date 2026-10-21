@@ -21,8 +21,11 @@ Keywords: `method`, `damping`, `atm` (required with `method`), or `parameters`
 (a `D3BJParameters`); `backend` (`"cuda"` or `"reference"` for the dftd3
 library), `device`, `precision`, `cutoff` (Å overrides), `skin` (Å).
 
-The calculator keeps one CUDA context per set of atomic numbers. Results are
-cached by ASE for unchanged atoms; charges and magnetic moments do not affect
+The calculator keeps one CUDA context per set of atomic numbers. On a
+three-dimensional periodic cell, a forces request also computes the stress
+(the virial adds a few percent), so `get_stress()` after `get_forces()` costs
+nothing extra; energy-only requests skip all derivatives. Results are cached by
+ASE for unchanged atoms; charges and magnetic moments do not affect
 D3 and do not invalidate them. Changing `method`, `damping`, `atm`, or
 `parameters` updates the context in place; changing `cutoff` rebuilds the
 neighbour list; changing `skin`, `device`, `precision`, or `backend` creates
