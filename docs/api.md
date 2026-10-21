@@ -24,8 +24,9 @@ cutoffs = Cutoffs.resolve({"disp2": 25.0})  # Å; omitted keys keep the referenc
 from vanderfast import D3Context
 
 with D3Context(numbers, params, device="cuda:0", skin=1.0) as context:
-    result = context.evaluate(positions, cell=cell, pbc=True,
-                              properties=("energy", "forces", "stress"))
+    result = context.evaluate(
+        positions, cell=cell, pbc=True, properties=("energy", "forces", "stress")
+    )
 ```
 
 | Argument | Meaning |

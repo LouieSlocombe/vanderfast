@@ -167,6 +167,7 @@ struct D3Context::Impl {
     make(dweights);
     make(atm_partials);
     make(contracted);
+    make(row_partials);
     make(dcontracted);
     make(atm_counters);
     make(species_dev);
@@ -275,7 +276,14 @@ struct D3Context::Impl {
     cn.resize(n);
     weights.resize(cuda::kRefPad * n);
     dweights.resize(cuda::kRefPad * n);
-    cuda::launch_cn(g, mv, gv, cn.data(), s);
+    if (optimized()) {
+      row_partials.resize(static_cast<std::size_t>(
+          std::max({graph.cn_items() * 9, graph.pair_items() * 11, std::int64_t{1}})));
+      cuda::launch_cn_items(g, mv, gv, graph.cn_item_prefix(), graph.cn_items(),
+                            row_partials.data(), cn.data(), s);
+    } else {
+      cuda::launch_cn(g, mv, gv, cn.data(), s);
+    }
     cuda::launch_weights(mv, g, cn.data(), weights.data(), derivatives ? dweights.data() : nullptr, s);
     cuda::ContractedView cv{nullptr, nullptr};
     if (optimized()) {
@@ -290,8 +298,14 @@ struct D3Context::Impl {
     timer.mark("cn_weights");
     // K3: pair term.
     if (parameters.pair_active()) {
-      cuda::launch_pair(g, mv, gv, weights.data(), derivatives ? dweights.data() : nullptr, cv,
-                        accum, s);
+      if (optimized()) {
+        cuda::launch_pair_items(g, mv, gv, graph.pair_item_prefix(), graph.pair_items(),
+                                weights.data(), derivatives ? dweights.data() : nullptr, cv, accum,
+                                row_partials.data(), s);
+      } else {
+        cuda::launch_pair(g, mv, gv, weights.data(), derivatives ? dweights.data() : nullptr, cv,
+                          accum, s);
+      }
     }
     timer.mark("pair");
     // K4: ATM triangles in bounded launches.
@@ -299,7 +313,12 @@ struct D3Context::Impl {
     if (debug != nullptr) download_debug(*debug, derivatives, accum);
     timer.mark("atm");
     // K5: CN-mediated derivatives.
-    if (derivatives) cuda::launch_cn_reverse(g, mv, gv, accum, optimized(), s);
+    if (derivatives && optimized()) {
+      cuda::launch_cn_reverse_items(g, mv, gv, graph.cn_item_prefix(), graph.cn_items(), accum,
+                                    row_partials.data(), s);
+    } else if (derivatives) {
+      cuda::launch_cn_reverse(g, mv, gv, accum, false, s);
+    }
 
     timer.mark("cn_reverse");
     // K6: reductions and transfers.
@@ -490,6 +509,7 @@ struct D3Context::Impl {
   DeviceBuffer<double> dweights;
   DeviceBuffer<double> atm_partials;
   DeviceBuffer<double> contracted;
+  DeviceBuffer<double> row_partials;
   DeviceBuffer<double> dcontracted;
   DeviceBuffer<unsigned long long> atm_counters;
   PinnedBuffer<unsigned long long> host_counters;

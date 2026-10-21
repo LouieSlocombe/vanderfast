@@ -58,6 +58,10 @@ class NeighborGraph {
   std::int64_t edges(View view) const noexcept { return view_edges_[view]; }
   std::int64_t total_edges() const noexcept { return total_edges_; }
   std::int64_t atm_items() const noexcept { return atm_items_total_; }
+  std::int64_t cn_items() const noexcept { return cn_items_total_; }
+  std::int64_t pair_items() const noexcept { return pair_items_total_; }
+  const long long* cn_item_prefix() const noexcept { return cn_prefix_.data(); }
+  const long long* pair_item_prefix() const noexcept { return pair_prefix_.data(); }
   const long long* atm_item_prefix() const noexcept { return item_prefix_.data(); }
   std::int64_t capacity() const noexcept { return static_cast<std::int64_t>(edges_.capacity()); }
   const BandSpec& bands() const noexcept { return bands_; }
@@ -70,12 +74,18 @@ class NeighborGraph {
   BandSpec bands_{};
   std::int64_t total_edges_ = 0;
   std::int64_t atm_items_total_ = 0;
+  std::int64_t cn_items_total_ = 0;
+  std::int64_t pair_items_total_ = 0;
   std::int64_t view_edges_[kViewCount] = {0, 0, 0};
   DeviceBuffer<int> counts_;
   DeviceBuffer<long long> totals_;
   DeviceBuffer<long long> row_ptr_;
   DeviceBuffer<long long> items_;
   DeviceBuffer<long long> item_prefix_;
+  DeviceBuffer<long long> cn_items_;
+  DeviceBuffer<long long> cn_prefix_;
+  DeviceBuffer<long long> pair_items_;
+  DeviceBuffer<long long> pair_prefix_;
   DeviceBuffer<int4> edges_;
   DeviceBuffer<int> len_[kViewCount];
   DeviceBuffer<int> upper_;
