@@ -1,0 +1,143 @@
+[build-system]
+requires = ["uv_build>=0.12.24,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "template-python"
+version = "0.0.0"
+description = "A modern, typed Python package template."
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Louie Slocombe", email = "louies@hotmail.co.uk" },
+]
+keywords = ["python", "template"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.14",
+  "Typing :: Typed",
+]
+dependencies = [
+  "numpy>=2.3.3",
+]
+
+[project.scripts]
+template-python = "template_python.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/LouieSlocombe/template_python"
+Issues = "https://github.com/LouieSlocombe/template_python/issues"
+Repository = "https://github.com/LouieSlocombe/template_python"
+
+[dependency-groups]
+dev = [
+  { include-group = "test" },
+  "mypy>=2.4.0",
+  "prek>=0.5.5",
+  "ruff>=0.16.10",
+]
+test = [
+  "pytest>=9.1.1",
+  "pytest-cov>=7.1.0",
+]
+
+[tool.pytest]
+minversion = "9.1"
+addopts = ["-ra", "--import-mode=importlib", "--cov", "--cov-report=term-missing"]
+testpaths = ["tests"]
+strict = true
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source_pkgs = ["template_python"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = true
+exclude_also = [
+  'if __name__ == "__main__":',
+]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = [
+  "A",    # flake8-builtins
+  "ARG",  # flake8-unused-arguments
+  "B",    # flake8-bugbear
+  "BLE",  # flake8-blind-except
+  "C4",   # flake8-comprehensions
+  "D",    # pydocstyle
+  "DTZ",  # flake8-datetimez
+  "E",    # pycodestyle errors
+  "ERA",  # eradicate
+  "EXE",  # flake8-executable
+  "F",    # Pyflakes
+  "FLY",  # flynt
+  "FURB", # refurb
+  "G",    # flake8-logging-format
+  "I",    # isort
+  "ICN",  # flake8-import-conventions
+  "INP",  # flake8-no-pep420
+  "ISC",  # flake8-implicit-str-concat
+  "LOG",  # flake8-logging
+  "N",    # pep8-naming
+  "NPY",  # NumPy-specific rules
+  "PERF", # Perflint
+  "PGH",  # pygrep-hooks
+  "PIE",  # flake8-pie
+  "PL",   # Pylint
+  "PT",   # flake8-pytest-style
+  "PTH",  # flake8-use-pathlib
+  "PYI",  # flake8-pyi
+  "RET",  # flake8-return
+  "RSE",  # flake8-raise
+  "RUF",  # Ruff-specific rules
+  "S",    # flake8-bandit
+  "SIM",  # flake8-simplify
+  "SLF",  # flake8-self
+  "T10",  # flake8-debugger
+  "TID",  # flake8-tidy-imports
+  "UP",   # pyupgrade
+  "W",    # pycodestyle warnings
+  "YTT",  # flake8-2020
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+  "D1",      # docstrings are welcome in tests but not required
+  "INP001",  # pytest's importlib mode does not need tests/__init__.py
+  "PLR2004", # literal expected values are clearer in assertions
+  "S101",    # pytest uses bare assert statements
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+files = ["src", "tests"]
+python_version = "3.14"
+strict = true
+warn_unreachable = true
+enable_error_code = [
+  "deprecated",
+  "exhaustive-match",
+  "explicit-override",
+  "ignore-without-code",
+  "mutable-override",
+  "possibly-undefined",
+  "redundant-expr",
+  "redundant-self",
+  "truthy-bool",
+  "truthy-iterable",
+  "unimported-reveal",
+  "unused-awaitable",
+]
+pretty = true
