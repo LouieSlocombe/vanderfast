@@ -53,7 +53,16 @@ endif()
 # statically linked CUDA runtime, IEEE-conforming division and square root,
 # no flush-to-zero, and never fast-math (the reference-weight fallback relies
 # on NaN/Inf detection).
+#
+# THIRD_PARTY targets wrap library kernels (CUB): they keep every flag except
+# the ptxas spill and local-memory warnings, which -Werror would make fatal.
 function(vanderfast_cuda_target target)
+  cmake_parse_arguments(PARSE_ARGV 1 _vf "THIRD_PARTY" "" "")
+  if(_vf_THIRD_PARTY)
+    set(_vf_ptxas_warnings "")
+  else()
+    set(_vf_ptxas_warnings "-Xptxas=-warn-spills,-warn-lmem-usage")
+  endif()
   set_target_properties(${target} PROPERTIES
     CUDA_ARCHITECTURES "${VANDERFAST_CUDA_ARCHITECTURES}"
     CUDA_RUNTIME_LIBRARY Static
@@ -61,7 +70,7 @@ function(vanderfast_cuda_target target)
     POSITION_INDEPENDENT_CODE ON)
   target_compile_options(${target} PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo --prec-div=true --prec-sqrt=true --ftz=false
-      --fmad=${_vf_fmad} -Xptxas=-warn-spills,-warn-lmem-usage -Xcompiler=-fno-fast-math>)
+      --fmad=${_vf_fmad} ${_vf_ptxas_warnings} -Xcompiler=-fno-fast-math>)
   if(VANDERFAST_CUDA_DEVICE_DEBUG)
     target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-G>)
   endif()

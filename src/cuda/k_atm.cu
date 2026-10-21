@@ -273,8 +273,11 @@ struct VAccum {
   double gx, gy, gz, g, e;
 };
 
+// The minimum of two blocks per SM lifts ptxas's register target: with only
+// the block size, sm_100 and sm_120 cap the derivative kernels at the
+// occupancy their shared memory already allows (about 168 registers) and spill.
 template <int M, bool Derivatives, bool Split>
-__global__ void __launch_bounds__(kWarpBlock)
+__global__ void __launch_bounds__(kWarpBlock, 2)
 atm_canonical_kernel(GeometryView g, ModelView m, GraphView graph,
                      const long long* __restrict__ item_prefix, long long item_begin,
                      long long item_count, const double* __restrict__ w,

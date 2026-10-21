@@ -1,6 +1,3 @@
-#include <cub/device/device_radix_sort.cuh>
-#include <cub/device/device_scan.cuh>
-
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -9,6 +6,7 @@
 #include <vector>
 
 #include "../common/d3_math.hpp"
+#include "cub_primitives.cuh"
 #include "cuda_check.cuh"
 #include "neighbor.cuh"
 
@@ -429,17 +427,17 @@ double NeighborGraph::finish_build(const GeometryView& g, const BandSpec& bands)
       items_.data(), cn_items_.data(), pair_items_.data(), scalars_.data());
   VF_LAUNCH_CHECK(stream_);
   std::size_t temp_bytes = 0;
-  VF_CUDA_CHECK(cub::DeviceScan::ExclusiveSum(nullptr, temp_bytes, totals_.data(), row_ptr_.data(),
+  VF_CUDA_CHECK(exclusive_sum(nullptr, temp_bytes, totals_.data(), row_ptr_.data(),
                                               static_cast<long long>(n + 1), stream_));
   scan_temp_.resize(temp_bytes);
-  VF_CUDA_CHECK(cub::DeviceScan::ExclusiveSum(scan_temp_.data(), temp_bytes, totals_.data(),
+  VF_CUDA_CHECK(exclusive_sum(scan_temp_.data(), temp_bytes, totals_.data(),
                                               row_ptr_.data(), static_cast<long long>(n + 1), stream_));
-  VF_CUDA_CHECK(cub::DeviceScan::ExclusiveSum(scan_temp_.data(), temp_bytes, items_.data(),
+  VF_CUDA_CHECK(exclusive_sum(scan_temp_.data(), temp_bytes, items_.data(),
                                               item_prefix_.data(), static_cast<long long>(n + 1),
                                               stream_));
   for (DeviceBuffer<long long>* source : {&cn_items_, &pair_items_}) {
     DeviceBuffer<long long>& target = source == &cn_items_ ? cn_prefix_ : pair_prefix_;
-    VF_CUDA_CHECK(cub::DeviceScan::ExclusiveSum(scan_temp_.data(), temp_bytes, source->data(),
+    VF_CUDA_CHECK(exclusive_sum(scan_temp_.data(), temp_bytes, source->data(),
                                                 target.data(), static_cast<long long>(n + 1),
                                                 stream_));
   }
@@ -506,11 +504,11 @@ double NeighborGraph::build_cell_bins(const GeometryView& g, const CellGrid& gri
   int end_bit = 1;
   while ((1LL << end_bit) <= bins && end_bit < 31) ++end_bit;
   std::size_t temp_bytes = 0;
-  VF_CUDA_CHECK(cub::DeviceRadixSort::SortPairs(nullptr, temp_bytes, bin_key_.data(), sorted_key_.data(),
+  VF_CUDA_CHECK(sort_pairs(nullptr, temp_bytes, bin_key_.data(), sorted_key_.data(),
                                                 atom_index_.data(), sorted_atom_.data(), g.n, 0, end_bit,
                                                 stream_));
   sort_temp_.resize(temp_bytes);
-  VF_CUDA_CHECK(cub::DeviceRadixSort::SortPairs(sort_temp_.data(), temp_bytes, bin_key_.data(),
+  VF_CUDA_CHECK(sort_pairs(sort_temp_.data(), temp_bytes, bin_key_.data(),
                                                 sorted_key_.data(), atom_index_.data(),
                                                 sorted_atom_.data(), g.n, 0, end_bit, stream_));
   bin_start_kernel<<<static_cast<unsigned>((bins + 1 + 255) / 256), 256, 0, stream_>>>(

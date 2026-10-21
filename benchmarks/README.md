@@ -15,7 +15,10 @@ Every case records the hardware, driver, software and build information,
 reference-data hash, all damping parameters and cutoffs, skin, precision, edge
 and triangle counts, the timing modes, errors against dftd3 (up to
 `--reference-max-atoms`), and a status. Failures, out-of-memory conditions,
-and timeouts are recorded as a status rather than dropped.
+and timeouts are recorded as a status rather than dropped. The dftd3
+comparisons run after every case has been timed, so its OpenMP threads never
+share the CPU with a timed vanderfast call; set `OMP_NUM_THREADS` to choose its
+thread count (it is recorded).
 
 | Mode | What is timed |
 | --- | --- |

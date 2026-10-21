@@ -1,4 +1,4 @@
-"""Check a CUDA wheel: device code for every architecture and its dynamic dependencies."""
+"""Check a CUDA wheel: device code for every architecture, no spills, and its dependencies."""
 
 import argparse
 import re
@@ -19,6 +19,27 @@ def _run(*command: str) -> str:
     return subprocess.run(command, capture_output=True, text=True, check=True).stdout  # noqa: S603
 
 
+def _resource_problems(usage: str) -> list[str]:
+    """Report vanderfast kernels that use a stack frame or local memory (spills).
+
+    CUB's kernels are exempt: they are compiled apart (src/cuda/cub_primitives.cu)
+    because NVIDIA's tuning policies spill a few bytes on some architectures.
+    """
+    problems = []
+    arch = "?"
+    function = "?"
+    for line in usage.splitlines():
+        if match := re.search(r"arch = (sm_\d+)", line):
+            arch = match.group(1)
+        elif match := re.search(r"Function (\S+):", line):
+            function = match.group(1)
+        elif "STACK:" in line and not function.startswith("_ZN3cub"):
+            sizes = dict(re.findall(r"(STACK|LOCAL):(\d+)", line))
+            if any(int(v) for v in sizes.values()):
+                problems.append(f"{arch} {function} uses {sizes} (register spills)")
+    return problems
+
+
 def check(wheel: Path, architectures: list[int], ptx: int | None) -> list[str]:
     """Return a list of problems found in ``wheel``."""
     problems: list[str] = []
@@ -36,6 +57,7 @@ def check(wheel: Path, architectures: list[int], ptx: int | None) -> list[str]:
             listed = _run("cuobjdump", "--list-ptx", library)
             if f"sm_{ptx}" not in listed and f"compute_{ptx}" not in listed:
                 problems.append(f"missing PTX for compute_{ptx}")
+        problems += _resource_problems(_run("cuobjdump", "--dump-resource-usage", library))
         readelf = shutil.which("readelf") or "readelf"
         needed = re.findall(r"\(NEEDED\)\s+Shared library: \[(.+?)\]", _run(readelf, "-d", library))
         problems += [

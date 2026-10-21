@@ -43,6 +43,14 @@ Device code is always compiled with `--prec-div=true --prec-sqrt=true
 IEEE NaN and infinity handling. `-lineinfo` is always on for profiler and
 compute-sanitizer line mapping.
 
+vanderfast's kernels are compiled with `-Xptxas=-warn-spills,-warn-lmem-usage`,
+so with `VANDERFAST_WERROR=ON` any register spill on any listed architecture
+fails the build. `tools/check_wheel.py` checks the same thing again on the
+built binary with `cuobjdump --dump-resource-usage`. CUB's scan and sort are
+the one exception: they live in their own translation unit
+(`src/cuda/cub_primitives.cu`), without those warnings, because NVIDIA's
+tuning policies spill a few bytes on some architectures.
+
 `release` expands to the release architecture list,
 `75-real;80-real;86-real;89-real;90-real;100-real;120-real;120-virtual`: SASS
 for Turing through Blackwell (sm_103 runs sm_100 code, sm_121 runs sm_120 code)
@@ -92,6 +100,11 @@ Publishing a GitHub release runs `.github/workflows/release.yml`:
 
 `make wheel gpu-verify` runs steps 2 and 3 locally, apart from the manylinux
 container.
+
+A wheel built locally with the conda toolchain is tagged `linux_x86_64`. It
+needs the libstdc++ and glibc of the machine that built it; auditwheel rates
+it `manylinux_2_39`. Only the cibuildwheel wheel targets `manylinux_2_28`: in
+that image, gcc-toolset links newer libstdc++ symbols statically.
 
 Before the first release, the repository needs four things set up:
 - a PyPI trusted publisher for `release.yml` and the `pypi` environment;

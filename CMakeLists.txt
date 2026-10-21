@@ -97,8 +97,15 @@ if(VANDERFAST_ENABLE_CUDA)
     src/cuda/k_reduce.cu
     src/cuda/context.cu)
   target_include_directories(vanderfast_cuda PRIVATE "${PROJECT_SOURCE_DIR}/src")
-  target_link_libraries(vanderfast_cuda PUBLIC vanderfast_host CUDA::cudart_static)
+  target_link_libraries(vanderfast_cuda PUBLIC vanderfast_host vanderfast_cub CUDA::cudart_static)
   vanderfast_cuda_target(vanderfast_cuda)
+
+  # CUB's device-wide scan and sort, kept apart so that its kernels are exempt
+  # from the fatal spill warnings (NVIDIA's tuning policies spill a few bytes
+  # on some architectures).
+  add_library(vanderfast_cub STATIC src/cuda/cub_primitives.cu)
+  target_link_libraries(vanderfast_cub PUBLIC CUDA::cudart_static)
+  vanderfast_cuda_target(vanderfast_cub THIRD_PARTY)
 
   if(DEFINED SKBUILD_PROJECT_NAME OR NOT VANDERFAST_BUILD_TESTS)
     set(PYBIND11_FINDPYTHON ON)

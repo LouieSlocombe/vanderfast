@@ -224,10 +224,9 @@ def run_case(
     repeats: int,
     warmup: int,
     skin: float,
-    reference_max_atoms: int,
     seed: int = 1234,
-) -> Case:
-    """Benchmark one workload, size, and parameter set."""
+) -> tuple[Case, Atoms]:
+    """Benchmark one workload, size, and parameter set; return the case and structure."""
     atoms = WORKLOADS[workload].build(size, seed)
     label = "atm" if parameters.atm else "pair"
     case = Case(
@@ -239,6 +238,7 @@ def run_case(
         skin_angstrom=skin,
         precision="float64",
     )
+    ctx: D3Context | None = None
     try:
         ctx = D3Context(atoms.numbers, parameters, skin=skin, profile=True)
         run = Run(atoms, parameters, ctx, repeats, warmup, skin, seed)
@@ -261,15 +261,20 @@ def run_case(
         failed = [name for name, value in case.modes.items() if "status" in value]
         if failed:
             case.status = f"partial: {', '.join(failed)} failed"
-        if len(atoms) <= reference_max_atoms:
-            case.errors = reference_errors(atoms, parameters, ctx)
     except Exception as error:  # noqa: BLE001
         case.status = f"error: {type(error).__name__}: {error}"
-    return case
+    finally:
+        if ctx is not None:
+            ctx.close()
+    return case, atoms
 
 
-def reference_errors(atoms: Atoms, parameters: D3BJParameters, ctx: D3Context) -> dict[str, Any]:
-    """Time dftd3 on the CPU and compare energies, forces, and stress."""
+def reference_errors(atoms: Atoms, parameters: D3BJParameters) -> dict[str, Any]:
+    """Time dftd3 on the CPU and compare energies, forces, and stress.
+
+    Called only after every case has been timed, so that dftd3's OpenMP
+    worker threads never compete with timed vanderfast calls for the CPU.
+    """
     from vanderfast.reference import ReferenceEvaluator, reference_version  # noqa: PLC0415
     from vanderfast.units import (  # noqa: PLC0415
         HARTREE,
@@ -286,7 +291,8 @@ def reference_errors(atoms: Atoms, parameters: D3BJParameters, ctx: D3Context) -
     )
     reference_ms = 1e3 * (time.perf_counter() - start)
     properties = ("forces", "stress") if atoms.pbc.all() else ("forces",)
-    ours = ctx.evaluate(atoms.positions, cell=cell, pbc=atoms.pbc, properties=properties)
+    with D3Context(atoms.numbers, parameters) as ctx:
+        ours = ctx.evaluate(atoms.positions, cell=cell, pbc=atoms.pbc, properties=properties)
     if reference.gradient is None or ours.forces is None:
         msg = "missing gradients"
         raise RuntimeError(msg)
@@ -341,18 +347,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         info["reference_data"],
     )
     cases: list[Case] = []
+    pending: list[tuple[Case, Atoms, D3BJParameters]] = []
     for workload in workloads:
         for size in sizes[:1] if WORKLOADS[workload].fixed_size else sizes:
             for flag in atm:
                 parameters = resolve_parameters(method=args.method, damping="bj", atm=flag)
-                case = run_case(
+                case, atoms = run_case(
                     workload, size, parameters, modes=modes, repeats=repeats, warmup=args.warmup,
-                    skin=args.skin, reference_max_atoms=args.reference_max_atoms,
+                    skin=args.skin,
                 )  # fmt: skip
                 cases.append(case)
+                if len(atoms) <= args.reference_max_atoms and not case.status.startswith("error"):
+                    pending.append((case, atoms, parameters))
                 native = case.modes.get("warm_native", {}).get("wall_ms", {}).get("median")
                 timing = "n/a" if native is None else f"{native:.2f} ms"
                 print(f"{case.case_id:40s} {case.status:6s} warm-native {timing}", flush=True)
+    for case, atoms, parameters in pending:
+        try:
+            case.errors = reference_errors(atoms, parameters)
+        except Exception as error:  # noqa: BLE001
+            case.errors = {"status": f"error: {type(error).__name__}: {error}"}
+        reference = case.errors.get("reference_wall_ms")
+        timing = "n/a" if reference is None else f"{reference:.2f} ms"
+        print(f"{case.case_id:40s} dftd3 {timing}", flush=True)
     output = (
         args.output or Path(__file__).parent / "results" / f"{args.suite}-{int(time.time())}.json"
     )
