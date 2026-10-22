@@ -1,0 +1,80 @@
+# Pinned upstream sources for the bundled D4 reference data.
+#
+# tools/generate_d4_data.py downloads exactly these files at exactly these commits
+# (or reads them from a local checkout) and refuses to continue unless every
+# sha256 matches. Changing a pin is a scientific change: regenerate the data and
+# fixtures and review the manifest diff. The D3 pins live in sources.toml.
+
+schema = "vanderfast.sources/1"
+
+[sources.dftd4]
+repository = "https://github.com/dftd4/dftd4"
+tag = "v4.2.0"
+commit = "6e1f59c3f39d919a2dbef0601d2576727c8b30e8"
+license = "LGPL-3.0-or-later"
+license_files = ["COPYING", "COPYING.LESSER"]
+
+[sources.dftd4.files]
+"src/dftd4/reference.f90" = "b70b2f2a7145739afdc4b6a1c4feab8d588629f3d1b6318f9f0e352c0be67c6c"
+"src/dftd4/reference.inc" = "0cc90b5f5d8b81dcd5f7a87acb44f575ee3d9e75df6e903f7f1a3ecc728e162f"
+"src/dftd4/data/covrad.f90" = "66e6888236f46de4c72b075e736d30aa71e8dabafe95f8e5a65eb9c18b98cd7b"
+"src/dftd4/data/en.f90" = "87ccc06465ab37c3ed45d37178977d0f473c2b00035b978c899d126921fad5fe"
+"src/dftd4/data/hardness.f90" = "670f52160cfcbbf6df3c0a85b4586e782b0444432432e25f31d26db2ec9b5556"
+"src/dftd4/data/zeff.f90" = "b261a5c7e565f765676a119c31b447f7c0c543cc47c6bdc9b19631ec20c7ad73"
+"src/dftd4/data/r4r2.f90" = "57b3c084ac806e37bf95b50207f61e40ff0a7da9483cb98bdcde1e734e2d9fb9"
+"src/dftd4/model/d4.f90" = "dc421a2ccf76227ae028f45ad84efd1683505b803f926dfda24be1b5d223b220"
+"src/dftd4/model/utils.f90" = "e95fa94d7a575b584a5304946f9fd2505c5970b0f1d6e131c5c80e85db06c3ab"
+"src/dftd4/ncoord.f90" = "7afd2bd78bb98ff5c7a892ace6e9114e39d4100d5ef7047a33c14676c3b49125"
+"src/dftd4/disp.f90" = "e83b1b3cdf1bb2caa56d4ec5b7014b02eb41f362a160dba7e3adbf82dabe2cad"
+"src/dftd4/cutoff.f90" = "e9e4b2b6d0cfdb138ff304cf109e59a9549998d2b9008821b4c53a5361c01e1a"
+"src/dftd4/param.f90" = "b01b762110944895c0c4e8e6df0897414b8fa6a1ff4a6e52b6cc57370c1be302"
+"src/dftd4/utils.f90" = "9058fcfae07e8e316cd53d3581f9e115890f1a7aa134a6c3820aa825b03d41c3"
+"src/dftd4/api.f90" = "38373014f748ea4074353cd9dbf4ec48e97a991036352ad027c17ae2ca73efb2"
+"src/dftd4/damping/rational.f90" = "449c052716272c1bb35ad0f41bb23b9a0df019de45c43eb308267c568724d396"
+"src/dftd4/damping/atm.f90" = "7f7e718bfa0892bd48591258b00430e3f7327693275f757fa6e3b27947b4f252"
+"subprojects/mctc-lib.wrap" = "f473e346d543e9ff2df3a6f6b81b013042e65788c61e6ae2cc91804872c887c7"
+"subprojects/multicharge.wrap" = "aab0538b83b9dd88e4855152d5b6802447a24ba7e922925a4b401a464e2b1d85"
+"COPYING" = "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+"COPYING.LESSER" = "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118"
+
+[sources.multicharge]
+repository = "https://github.com/grimme-lab/multicharge"
+tag = "v0.5.0"
+commit = "6a5d63f9e9e29dcf13cc47cc27f33bf9015681bf"
+pinned_by = "dftd4 v4.2.0 subprojects/multicharge.wrap (revision v0.5.0)"
+license = "Apache-2.0"
+license_files = ["LICENSE"]
+
+[sources.multicharge.files]
+"src/multicharge/param/eeq2019.f90" = "02b8bee49c10b4c31914caf149d9f58164e58d6dc7ae2ab21e9d12f5bc22797a"
+"src/multicharge/param.f90" = "20b05e48bc0e384381fc84f5a04c8048ce2a86d9c5a7f3498fa6694b661d877f"
+"src/multicharge/model/eeq.f90" = "a579f32e1617414baceb0eff139cdec306f6eeda186e07b59d5f572e23aa15e5"
+"src/multicharge/model/type.F90" = "d897aa55a7fa90203b1fdebe17ba5d98ab0ce21076db87fe082242959d811357"
+"src/multicharge/ewald.f90" = "d1c85c6022a533698229dbf3c7fff8871952eda44b6ad589c7273317860b8126"
+"src/multicharge/wignerseitz.f90" = "d4d6f90858d6e960ecc86ae7d61c7f1779cb8398d32ea9bb70df24a3ee8739b8"
+"src/multicharge/charge.f90" = "af0b9984ad5a9048bab21e47be66643c5a511ca51d99956e1c9f46b9271be486"
+"subprojects/mctc-lib.wrap" = "f473e346d543e9ff2df3a6f6b81b013042e65788c61e6ae2cc91804872c887c7"
+"LICENSE" = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+
+[sources.mctc-lib]
+repository = "https://github.com/grimme-lab/mctc-lib"
+tag = "v0.5.2"
+commit = "e9de066d89f250d1cfb6de3a33f0c27c0e2f855d"
+pinned_by = "dftd4 v4.2.0 and multicharge v0.5.0 wraps name v0.5.1; the conda-forge builds link mctc-lib 0.5.2"
+# Every file listed below is identical in its numerics at v0.5.1 (only comments
+# and unrelated constants differ); v0.5.2 is the release the reference links.
+upstream_wrap = { tag = "v0.5.1", commit = "aa89d4bf5c0076fbf169b59eeb9e30185db0e5a5" }
+license = "Apache-2.0"
+license_files = ["LICENSE"]
+
+[sources.mctc-lib.files]
+"src/mctc/data/covrad.f90" = "fdbd599664a7f113633d96110531d810fdc8e54b6db26d4f584120d9c7cec314"
+"src/mctc/io/convert.f90" = "b05d7b4821deb4abe448cf11d53df9b118747294b44f0d774f056bc3b28430b9"
+"src/mctc/io/constants.f90" = "6ee2b599fc2d338f1a7e07b5b46e984e2612b4cfc58110d1203ecf19ebde2385"
+"src/mctc/io/codata2018.f90" = "47c4abbc7f9dddb3bba1c89563b45e792304bc56723f1c4b05fc978aa5d3704d"
+"src/mctc/io/math.f90" = "8174e5368b1c052a9961825d0a0cb03d58cab944037e22559e731de23c5fc19b"
+"src/mctc/cutoff.f90" = "b20aee70bd135710d73021cb98f838f23c6f51d4e4b3beafce14b9be54cd0249"
+"src/mctc/ncoord/type.f90" = "b8b819f9ea1c0765632fdb4ea9046b0c79f2c1bb13d39555ac3059f498ba1bb5"
+"src/mctc/ncoord/erf.f90" = "6bc976e03e290bc01bccfeee3016513e6154ef6267f152d36b7c99a7d706fea9"
+"src/mctc/ncoord/erf/dftd4.f90" = "3bc326ecfbd5a8b43cac9f021a1472df335f7ef041e2f33916906fa71c60a3ab"
+"LICENSE" = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"

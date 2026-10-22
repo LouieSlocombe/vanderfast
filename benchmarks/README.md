@@ -31,3 +31,11 @@ thread count (it is recorded).
 
 Pair-only and pair+ATM are measured separately with parameter sets that differ
 only in `s9`.
+
+`--model d4` benchmarks `D4Context` and `D4Calculator` instead (case ids end
+in `/d4`, or `/d4-converged` with `--ewald converged`), records the charge
+solver's iteration counts and matrix size, and compares energies, forces,
+stress, and EEQ charges with dftd4. Time dftd4 with
+`OMP_NUM_THREADS=<cores> OPENBLAS_NUM_THREADS=1`: its OpenMP loops and a
+multi-threaded OpenBLAS otherwise oversubscribe the CPU and run two to five
+times slower. Both thread settings are recorded with each result.

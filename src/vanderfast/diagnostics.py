@@ -6,6 +6,7 @@ from typing import Any
 
 from vanderfast._native_loader import load_native
 from vanderfast.data import load_manifest, load_reference_tables
+from vanderfast.data.d4 import load_d4_manifest, load_d4_reference_tables
 from vanderfast.errors import NativeExtensionMissingError
 
 
@@ -18,6 +19,7 @@ class BackendInfo:
     native: dict[str, Any] | None
     native_error: str | None
     devices: list[dict[str, Any]] | None = field(default=None)
+    reference_data_d4: dict[str, Any] | None = field(default=None)
 
     def to_dict(self) -> dict[str, Any]:
         """Return the report as a JSON-serialisable mapping."""
@@ -31,6 +33,18 @@ def _reference_summary() -> dict[str, Any]:
         "source": tables.source_id,
         "sha256": tables.sha256,
         "supported_atomic_numbers": manifest["supported_atomic_numbers"],
+        "table_aatoau": manifest["units"]["table_aatoau"]["value"],
+    }
+
+
+def _d4_reference_summary() -> dict[str, Any]:
+    tables = load_d4_reference_tables()
+    manifest = load_d4_manifest()
+    return {
+        "source": tables.source_id,
+        "sha256": tables.sha256,
+        "supported_atomic_numbers": manifest["supported_atomic_numbers"],
+        "charge_model": manifest["conventions"]["charge_model"],
         "table_aatoau": manifest["units"]["table_aatoau"]["value"],
     }
 
@@ -50,6 +64,7 @@ def backend_info(*, initialize_cuda: bool = False) -> BackendInfo:
             reference_data=_reference_summary(),
             native=None,
             native_error=str(error),
+            reference_data_d4=_d4_reference_summary(),
         )
     build: dict[str, Any] = dict(native.build_info())
     devices = [dict(d) for d in native.devices()] if initialize_cuda else None
@@ -59,4 +74,5 @@ def backend_info(*, initialize_cuda: bool = False) -> BackendInfo:
         native=build,
         native_error=None,
         devices=devices,
+        reference_data_d4=_d4_reference_summary(),
     )

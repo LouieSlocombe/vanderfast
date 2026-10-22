@@ -1,6 +1,7 @@
 # Developer entry points. Run inside the activated vanderfast-dev environment.
 PYTHON ?= python
 UPSTREAM ?=
+UPSTREAM_D4 ?=
 
 .PHONY: help env lock dev dev-cpu lint test test-gpu cpp-test sanitize stubtest wheel gpu-verify bench-smoke bench data data-check fixtures fixtures-check
 
@@ -65,7 +66,7 @@ GPU_VENV ?= build/gpu-venv
 gpu-verify:
 	rm -rf $(GPU_VENV)
 	$(PYTHON) -m venv $(GPU_VENV)
-	$(GPU_VENV)/bin/python -m pip install --quiet dist/*.whl "dftd3==1.6.0" pytest pytest-cov
+	$(GPU_VENV)/bin/python -m pip install --quiet dist/*.whl "dftd3==1.6.0" "dftd4==4.2.0" pytest pytest-cov
 	cd build && env -i HOME="$$HOME" PATH=/usr/bin:/bin $(CURDIR)/$(GPU_VENV)/bin/python -m pytest \
 	  $(CURDIR)/tests --rootdir $(CURDIR) --require-native --require-cuda --require-reference \
 	  --run-slow --no-cov -p no:cacheprovider --junitxml $(CURDIR)/build/gpu-junit.xml
@@ -74,12 +75,16 @@ gpu-verify:
 
 data:
 	$(PYTHON) -I tools/generate_d3_data.py $(UPSTREAM)
+	$(PYTHON) -I tools/generate_d4_data.py $(UPSTREAM_D4)
 
 data-check:
 	$(PYTHON) -I tools/generate_d3_data.py --check --verify-binary "$$CONDA_PREFIX/lib" $(UPSTREAM)
+	$(PYTHON) -I tools/generate_d4_data.py --check --verify-binary "$$CONDA_PREFIX/lib" $(UPSTREAM_D4)
 
 fixtures:
 	OMP_NUM_THREADS=1 $(PYTHON) tools/generate_fixtures.py
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 $(PYTHON) tools/generate_d4_fixtures.py
 
 fixtures-check:
 	OMP_NUM_THREADS=1 $(PYTHON) tools/generate_fixtures.py --check
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 $(PYTHON) tools/generate_d4_fixtures.py --check

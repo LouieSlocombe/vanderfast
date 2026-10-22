@@ -1,14 +1,16 @@
 # vanderfast
 
-GPU DFT-D3(BJ) dispersion energies, forces, and stress, with the
+GPU DFT-D3(BJ) and DFT-D4 dispersion energies, forces, and stress, with the
 Axilrod-Teller-Muto three-body term, for molecules and periodic systems. The
 numerical core is CUDA C++ in double precision; the Python layer provides a
-NumPy API and an ASE calculator. Results agree with simple-dftd3 v1.6.0 to
-about 1e-15 in atomic units on every reference fixture.
+NumPy API and ASE calculators. D3 results agree with simple-dftd3 v1.6.0 to
+about 1e-15 in atomic units on every reference fixture; D4 results, including
+the EEQ partial charges, agree with dftd4 v4.2.0 to about 1e-13.
 
-> **Status: pre-release (0.1.0.dev0).** Feature-complete for D3(BJ) + ATM on
-> molecules, 3D cells, slabs, and wires. Tested on one GPU (RTX 4080 SUPER,
-> sm_89); see the support matrix in [docs/build.md](docs/build.md).
+> **Status: pre-release (0.1.0.dev0).** Feature-complete for D3(BJ) + ATM and
+> for D4 (EEQ charges, rational damping, ATM) on molecules, 3D cells, slabs,
+> and wires. Tested on one GPU (RTX 4080 SUPER, sm_89); see the support matrix
+> in [docs/build.md](docs/build.md).
 
 ## Requirements
 
@@ -22,7 +24,7 @@ about 1e-15 in atomic units on every reference fixture.
 From a release wheel, once one is published on PyPI:
 
 ```bash
-pip install vanderfast             # add [reference] for the dftd3 1.6.0 cross-check backend
+pip install vanderfast             # add [reference] for the dftd3 1.6.0 and dftd4 4.2.0 backends
 python -m vanderfast info --json   # build, data, and device report
 ```
 
@@ -36,8 +38,8 @@ make test-gpu   # full suite; fails rather than skips GPU and reference tests
 ```
 
 `VANDERFAST_ENABLE_CUDA=OFF pip install .` installs the pure-Python parts
-(parameters, data, the NumPy oracle, and the dftd3 reference backend) without
-the CUDA backend.
+(parameters, data, the NumPy oracles, and the reference backends) without the
+CUDA backend.
 
 ## Usage
 
@@ -66,8 +68,26 @@ with D3Context(atoms.numbers, params, skin=1.0) as context:
     )
 ```
 
-More in [examples/](examples/): a molecule, crystal stress, a comparison with
-`dftd3.ase`, repeated MD evaluations, and the array interface.
+### DFT-D4
+
+```python
+from vanderfast.ase import D4Calculator
+
+atoms.calc = D4Calculator(method="r2scan")  # ATM on by default, as in dftd4
+energy = atoms.get_potential_energy()
+charges = atoms.calc.get_property("charges", atoms)  # EEQ partial charges, e
+```
+
+The total charge is the sum of `atoms.get_initial_charges()` unless `charge=`
+is given. As in dftd4, any periodic direction makes the system fully
+periodic (slabs and wires need vacuum vectors), and stress is available for
+every periodic system. The periodic charges reproduce dftd4's truncated Ewald
+sums by default; `ewald="converged"` uses complete sums, which do not depend
+on the choice of cell. `D4Context` is the array interface.
+
+More in [examples/](examples/): a molecule, crystal stress, comparisons with
+`dftd3.ase` and `dftd4.ase`, D4 charges of an anion, both periodic charge
+models, repeated MD evaluations, and the array interface.
 
 ## Performance
 
@@ -100,13 +120,34 @@ full-rate FP64 should do much better, but none has been measured. Full
 tables, stage timings, the method, and the remaining bottlenecks are in
 [docs/performance.md](docs/performance.md).
 
+DFT-D4 on the same machine against dftd4 4.2.0 (conda-forge, OpenMP, 28
+threads, single-threaded OpenBLAS, its fastest setting), energy and forces
+with the EEQ charges, default cutoffs, development build:
+
+| System | Atoms | Term | vanderfast (ms) | dftd4, 28 threads (ms) | Speedup |
+| --- | ---: | --- | ---: | ---: | ---: |
+| benzene cluster | 252 | pair | 1.55 | 13 | 8x |
+| benzene cluster | 1020 | pair | 5.17 | 337 | 65x |
+| benzene cluster | 1020 | pair + ATM | 42 | 622 | 15x |
+| liquid water | 255 | pair | 4.32 | 104 | 24x |
+| liquid water | 1023 | pair | 19.4 | 1,196 | 61x |
+| liquid water | 1023 | pair + ATM | 1,474 | 12,781 | 9x |
+| MgO crystal | 512 | pair | 13.2 | 394 | 30x |
+| MgO crystal | 512 | pair + ATM | 899 | 9,239 | 10x |
+| liquid water | 4095 | pair | 211 | – | – |
+| MgO crystal | 4096 | pair | 287 | – | – |
+
+Periodic D4 is dominated by dftd4's real-space Ewald sums for the charges,
+large molecules by the iterative charge solve, and anything with ATM by the
+three-body term.
+
 ## Documentation
 
-- [docs/api.md](docs/api.md): parameters, `D3Context`, results, errors,
-  diagnostics
-- [docs/ase.md](docs/ase.md): the ASE calculator and its caching rules
+- [docs/api.md](docs/api.md): parameters, `D3Context`, `D4Context`, results,
+  errors, diagnostics
+- [docs/ase.md](docs/ase.md): the ASE calculators and their caching rules
 - [docs/conventions.md](docs/conventions.md): units, geometry, counting,
-  parameters, and known differences from simple-dftd3
+  parameters, the D4 charge model, and known differences from the references
 - [docs/validation.md](docs/validation.md): how correctness is established
 - [docs/performance.md](docs/performance.md): measured results and method
 - [docs/limitations.md](docs/limitations.md): what is out of scope
@@ -122,14 +163,15 @@ make lint            # pre-commit hooks (prek) and mypy
 make test            # CPU: oracle, fixtures, fake-native API tests, 100% coverage
 make cpp-test        # Catch2 host and device tests
 make sanitize        # compute-sanitizer memcheck, racecheck, synccheck, initcheck
-make data-check      # regenerate the reference tables byte for byte
-make fixtures-check  # regenerate the dftd3 fixtures
+make data-check      # regenerate the D3 and D4 reference tables byte for byte
+make fixtures-check  # regenerate the dftd3 and dftd4 fixtures
 make bench-smoke     # benchmark harness sanity run
 ```
 
 ## License
 
 vanderfast's code is released under the [MIT License](LICENSE). The bundled
-reference tables derive from simple-dftd3 (LGPL-3.0-or-later) and mctc-lib
-(Apache-2.0); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). A
-replacement table can be loaded at run time with `reference_data=`.
+reference tables derive from simple-dftd3 and dftd4 (LGPL-3.0-or-later),
+multicharge and mctc-lib (Apache-2.0); see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). A replacement table can be
+loaded at run time with `reference_data=`.

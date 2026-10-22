@@ -27,6 +27,48 @@ rotation, permutation, wrapping, replication, and inactive-vector invariances
 hold; neighbour-list reuse equals fresh evaluations; and compute-sanitizer
 (memcheck with leak check, racecheck, synccheck, initcheck) is clean.
 
+## DFT-D4
+
+D4 is checked against dftd4 v4.2.0 (with multicharge v0.5.0) the same way.
+
+1. **Reference data.** `tools/generate_d4_data.py --check --verify-binary`
+   regenerates `d4_reference.bin` byte for byte and finds every parsed array
+   inside the compiled `libdftd4`, `libmulticharge`, and `libmctc-lib`. The
+   reference polarisabilities and C6 derived from it are hashed in the
+   manifest; the native host code reproduces both hashes bitwise, and agrees
+   bitwise with the oracle for other `ga`/`gc`. Every method alias resolves to
+   parameters for which dftd4's own lookup gives a bitwise identical energy,
+   with and without ATM.
+2. **NumPy oracle.** `vanderfast._oracle_d4` evaluates both coordination
+   numbers, the bordered EEQ system (dense solve), the weights, C6, the pair
+   and ATM terms, and the adjoint gradient and virial, including multicharge's
+   periodic Ewald sums with their quirks. It matches every fixture: energies
+   to 3e-13 relative, charges to 2e-14 e, gradients and virials to about
+   1e-15. Its `ewald="converged"` mode is independent of the Ewald parameter
+   and agrees between a cell and its supercells.
+3. **CUDA backend.** All 291 fixtures (`tests/fixtures/dftd4-4.2.0`:
+   molecules and ions, every element 1-103 neutral and charged, actinides
+   with upstream's zero-filled references, dimer scans across the 25, 30, 40,
+   and 60 bohr cutoffs, trimers, ionic and skewed crystals, cell dependence,
+   slabs and wires, extreme coordination numbers, zero and negative effective
+   charges, and a dense hydrogen cluster whose EEQ matrix is indefinite) agree
+   to 1.1e-13 relative in energy, 2e-14 e in charges, 2e-15 hartree/bohr in
+   gradients, and 3e-14 hartree in virials. The tests allow 1e-12. MINRES
+   and the shared-memory LU give the same agreement.
+
+Further D4 checks: coordination numbers, weights and their derivatives, dE/dCN
+and dE/dq equal the oracle; forces and strain derivatives match finite
+differences in both Ewald modes; slabs and wires equal the same cell with every
+flag set; translations, rotations, permutations, and lattice shifts leave
+results unchanged; the converged mode gives the same energy per cell for a
+crystal and its supercell; the optimised kernels (tiled assembly, structure
+factors, packed MINRES, stored lattice derivatives) agree with the literal
+kernels and dense LU to 2e-13 e and 1e-14 hartree/bohr; pair-only results
+are bitwise reproducible; `set_charge` and `set_parameters` equal fresh
+contexts; and the ASE calculator's reference backend reproduces `dftd4.ase`
+bitwise, with the CUDA backend matching it in energy, forces, stress, and
+charges.
+
 Run everything on a GPU machine with `make test-gpu cpp-test sanitize`.
 
 ## Release artifacts
@@ -39,7 +81,7 @@ also runs:
   architecture, compute_120 PTX, no register spills in any vanderfast kernel,
   and no CUDA library among its dynamic dependencies.
 - The wheel is installed into a fresh virtual environment with PyPI
-  dependencies only (numpy, ase, `dftd3==1.6.0`).
+  dependencies only (numpy, ase, `dftd3==1.6.0`, `dftd4==4.2.0`).
 - The whole suite then runs with `--require-native --require-cuda
   --require-reference --run-slow` in a scrubbed environment.
 - `tools/gpu_report.py` records the wheel's sha256 with the result.

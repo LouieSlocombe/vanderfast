@@ -16,8 +16,8 @@ struct alignas(16) PairConst {
   double kappa;   // 3 r4r2_i r4r2_j
   double r0_6;    // (a1 sqrt(kappa) + a2)^6
   double r0_8;    // (a1 sqrt(kappa) + a2)^8
-  double r0_atm;  // rs9 rvdw_ij
-  double pad;
+  double r0_atm;  // ATM radius: rs9 rvdw_ij (D3) or a1 sqrt(kappa) + a2 (D4)
+  double aux;     // model-specific: the D4 electronegativity factor of the CN; unused by D3
 };
 
 struct ModelView {
@@ -29,9 +29,10 @@ struct ModelView {
   const double* c6ref;         // [S * S * kC6Block], block (s, t) rows for s
   const PairConst* pair;       // [S * S]
   double s6, s8, s9;
-  double alp_eff;              // alp + 2
-  double alp3;                 // (alp + 2) / 3
+  double alp_eff;              // ATM exponent: alp + 2 (D3) or alp (D4)
+  double alp3;                 // alp_eff / 3
   double cn_cutoff2, disp2_cutoff2, disp3_cutoff2;
+  double atm_c6_floor;         // ATM triangles with any |C6| below this are skipped
 };
 
 struct GeometryView {
@@ -61,12 +62,14 @@ struct AccumView {
   double* e_atm;   // [N]
   double* vir;     // [6N] SoA: xx, yy, zz, yz, xz, xy
   std::int32_t n;
+  double* gq;      // [N] dE/dq (D4 only; null for D3)
 };
 
 // Species-contracted weights (optional; null in the literal variant).
 struct ContractedView {
   const double* u;   // [N * S * kRefPad]
   const double* du;  // [N * S * kRefPad], null for energy-only evaluations
+  const double* dq = nullptr;  // [N * S * kRefPad] charge derivative (D4 only)
 };
 
 }  // namespace vanderfast::cuda

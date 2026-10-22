@@ -31,3 +31,34 @@ D3 and do not invalidate them. Changing `method`, `damping`, `atm`, or
 neighbour list; changing `skin`, `device`, `precision`, or `backend` creates
 a new context. Unlike `dftd3.ase.DFTD3(method=...)`, which leaves ATM off
 unless requested, `atm` must always be given explicitly.
+
+## D4Calculator
+
+```python
+from vanderfast.ase import D4Calculator
+
+atoms.calc = D4Calculator(method="r2scan")  # ATM on by default, as in dftd4.ase
+energy = atoms.get_potential_energy()
+charges = atoms.calc.get_property("charges", atoms)  # EEQ charges, e
+```
+
+| Property | Result |
+| --- | --- |
+| `energy`, `free_energy` | total dispersion energy (eV) |
+| `forces` | eV/Å |
+| `stress` | eV/Å³, order xx, yy, zz, yz, xz, xy; any periodic system |
+| `charges` | EEQ partial charges (e) |
+
+Keywords: `method` and `atm` (default `True`), or `parameters` (a
+`D4Parameters`); `charge` (total charge in e; by default the sum of
+`atoms.get_initial_charges()`, as in `dftd4.ase`); `backend` (`"cuda"` or
+`"reference"` for the dftd4 library); `device`, `precision`, `cutoff` (Å
+overrides of `cn`, `disp2`, `disp3`), `skin` (Å), `ewald` (`"upstream"` or
+`"converged"`), and `solver` (`EEQSolverOptions`).
+
+Any periodic direction makes the system fully periodic over the cell, so a
+slab or wire needs vacuum lattice vectors. Without an explicit `charge`,
+changing the initial charges invalidates the cached results and updates the
+context's total charge in place (no rebuild); with one, initial charges are
+ignored. Magnetic moments never matter. The other caching rules are those of
+`D3Calculator`.

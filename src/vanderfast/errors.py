@@ -17,6 +17,10 @@ class UnsupportedFeatureError(VanderfastError, NotImplementedError):
     """A requested feature is not implemented by the selected backend."""
 
 
+class ChargeSolverError(VanderfastError, ArithmeticError):
+    """The EEQ charge equations are singular or the iterative solve did not converge."""
+
+
 class CudaError(VanderfastError, RuntimeError):
     """A CUDA runtime failure reported by the native backend."""
 
@@ -38,4 +42,4 @@ class NativeExtensionMissingError(VanderfastError, ImportError):
 
 
 class ReferenceBackendUnavailableError(VanderfastError, ImportError):
-    """The optional ``dftd3`` reference library is not installed."""
+    """An optional reference library (``dftd3`` or ``dftd4``) is not installed."""

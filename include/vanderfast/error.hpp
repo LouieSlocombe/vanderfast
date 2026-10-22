@@ -20,6 +20,8 @@ enum class ErrorCode {
   ContextBusy,         // a context was used concurrently
   ContextPoisoned,     // an earlier sticky CUDA error invalidated the context
   Internal,            // a broken internal invariant
+  ChargeSystemSingular,       // the EEQ charge equations are singular
+  ChargeSolverNotConverged,   // the iterative charge solver did not converge
 };
 
 const char* to_string(ErrorCode code) noexcept;

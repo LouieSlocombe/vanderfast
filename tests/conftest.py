@@ -6,8 +6,10 @@ import os
 
 import pytest
 
-# The dftd3 reference uses OpenMP reductions; one thread makes them deterministic.
+# The dftd3 and dftd4 references use OpenMP reductions, and dftd4 solves its charge
+# model with LAPACK; one thread of each makes them deterministic.
 os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -26,7 +28,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--require-reference",
         action="store_true",
-        help="fail instead of skipping tests that need dftd3 1.6.0",
+        help="fail instead of skipping tests that need dftd3 1.6.0 or dftd4 4.2.0",
     )
     group.addoption("--run-slow", action="store_true", help="run tests marked slow")
 
@@ -51,10 +53,17 @@ def _has_reference() -> bool:
     return str(importlib.import_module("dftd3").__version__) == "1.6.0"
 
 
+def _has_reference_d4() -> bool:
+    if importlib.util.find_spec("dftd4") is None:
+        return False
+    return str(importlib.import_module("dftd4").__version__) == "4.2.0"
+
+
 _CAPABILITIES = {
     "native": ("--require-native", _has_native, "vanderfast._native is not built"),
     "cuda": ("--require-cuda", _has_cuda, "no CUDA device is available"),
     "reference": ("--require-reference", _has_reference, "dftd3 1.6.0 is not installed"),
+    "reference_d4": ("--require-reference", _has_reference_d4, "dftd4 4.2.0 is not installed"),
 }
 
 

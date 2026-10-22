@@ -38,7 +38,7 @@ htmlcov/
 .ipynb_checkpoints/
 
 # vanderfast build, profiling, and benchmark outputs
-/build*/
+/build-*/
 /reports/
 /benchmarks/results/*
 !/benchmarks/results/.gitkeep

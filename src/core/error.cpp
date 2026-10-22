@@ -30,6 +30,10 @@ const char* to_string(ErrorCode code) noexcept {
       return "ContextPoisoned";
     case ErrorCode::Internal:
       return "Internal";
+    case ErrorCode::ChargeSystemSingular:
+      return "ChargeSystemSingular";
+    case ErrorCode::ChargeSolverNotConverged:
+      return "ChargeSolverNotConverged";
   }
   return "Unknown";
 }

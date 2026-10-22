@@ -12,11 +12,18 @@ REQUIRED = [
     "data/sources.toml",
     "data/licenses/simple-dftd3-COPYING.LESSER",
     "data/licenses/mctc-lib-LICENSE",
+    "data/sources-d4.toml",
+    "data/licenses/dftd4-COPYING.LESSER",
+    "data/licenses/multicharge-LICENSE",
     "src/vanderfast/__init__.py",
     "src/vanderfast/data/d3_reference.bin",
     "src/vanderfast/data/d3bj_methods.json",
     "src/vanderfast/data/manifest.json",
+    "src/vanderfast/data/d4_reference.bin",
+    "src/vanderfast/data/d4_methods.json",
+    "src/vanderfast/data/d4_manifest.json",
     "tests/fixtures/dftd3-1.6.0/molecules.jsonl",
+    "tests/fixtures/dftd4-4.2.0/molecules.jsonl",
 ]
 FORBIDDEN_PREFIXES = ["build/", "reports/", ".github/", "benchmarks/results/"]
 

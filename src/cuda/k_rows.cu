@@ -8,40 +8,11 @@
 #include "cuda_check.cuh"
 #include "device_util.cuh"
 #include "kernels.cuh"
+#include "row_items.cuh"
 
 namespace vanderfast::cuda {
 
 namespace {
-
-__device__ __forceinline__ int centre_of(const long long* __restrict__ prefix, int n, long long item) {
-  int lo = 0;
-  int hi = n;
-  while (hi - lo > 1) {
-    const int mid = (lo + hi) / 2;
-    if (prefix[mid] <= item) {
-      lo = mid;
-    } else {
-      hi = mid;
-    }
-  }
-  return lo;
-}
-
-struct ItemRange {
-  int i;
-  long long begin;
-  long long end;
-};
-
-__device__ __forceinline__ ItemRange item_range(const long long* prefix, int n, long long item,
-                                                const long long* row_ptr, const int* len) {
-  const int i = centre_of(prefix, n, item);
-  const long long chunk = item - prefix[i];
-  const long long row = row_ptr[i];
-  const long long begin = row + chunk * kRowChunk;
-  const long long end = min(begin + kRowChunk, row + len[i]);
-  return {i, begin, end};
-}
 
 __global__ void cn_items_kernel(GeometryView g, ModelView m, GraphView graph,
                                 const long long* __restrict__ prefix, long long items,
@@ -73,9 +44,11 @@ __global__ void cn_items_reduce(const long long* __restrict__ prefix, int n,
   cn[i] = sum;
 }
 
-constexpr int kPairPartials = 11;  // energy, g, grad[3], vir[6]
+// energy, g, grad[3], vir[6], and with charge derivatives (D4) dE/dq.
+template <bool Charges>
+constexpr int kPairPartials = Charges ? 12 : 11;
 
-template <int M, bool Derivatives>
+template <int M, bool Derivatives, bool Charges>
 __global__ void pair_items_kernel(GeometryView g, ModelView m, GraphView graph,
                                   const long long* __restrict__ prefix, long long items,
                                   const double* __restrict__ w, const double* __restrict__ dw,
@@ -90,6 +63,7 @@ __global__ void pair_items_kernel(GeometryView g, ModelView m, GraphView graph,
   const long long ubase = static_cast<long long>(i) * m.n_species * kRefPad;
   double energy = 0.0;
   double g_i = 0.0;
+  double gq_i = 0.0;
   math::Vec3 grad_i{0.0, 0.0, 0.0};
   Sym6 vir;
   for (long long e = r.begin + lane; e < r.end; e += kWarpSize) {
@@ -105,11 +79,13 @@ __global__ void pair_items_kernel(GeometryView g, ModelView m, GraphView graph,
     const double* ui = cv.u + ubase + sj * kRefPad;
     double c6 = 0.0;
     double dc6_i = 0.0;
+    double dc6q_i = 0.0;
 #pragma unroll
     for (int b = 0; b < M; ++b) {
       if (b >= nref_j) break;
       c6 += ui[b] * wj[b];
       if constexpr (Derivatives) dc6_i += cv.du[ubase + sj * kRefPad + b] * wj[b];
+      if constexpr (Derivatives && Charges) dc6q_i += cv.dq[ubase + sj * kRefPad + b] * wj[b];
     }
     const double r4 = r2 * r2;
     const double t6 = 1.0 / (r4 * r2 + pc.r0_6);
@@ -129,26 +105,30 @@ __global__ void pair_items_kernel(GeometryView g, ModelView m, GraphView graph,
         grad_i.z -= 2.0 * de.z;
       }
       g_i += -dc6_i * edisp;
+      if constexpr (Charges) gq_i += -dc6q_i * edisp;
     }
   }
-  double* out = partials + kPairPartials * item;
-  const double totals[kPairPartials] = {
-      energy, g_i, grad_i.x, grad_i.y, grad_i.z, vir.v[0], vir.v[1], vir.v[2], vir.v[3], vir.v[4], vir.v[5]};
+  constexpr int P = kPairPartials<Charges>;
+  double* out = partials + P * item;
+  const double totals[12] = {energy,   g_i,      grad_i.x, grad_i.y, grad_i.z, vir.v[0],
+                             vir.v[1], vir.v[2], vir.v[3], vir.v[4], vir.v[5], gq_i};
 #pragma unroll
-  for (int c = 0; c < kPairPartials; ++c) {
+  for (int c = 0; c < P; ++c) {
     const double total = (Derivatives || c == 0) ? warp_sum(totals[c]) : 0.0;
     if (lane == 0) out[c] = total;
   }
 }
 
+template <bool Charges>
 __global__ void pair_items_reduce(const long long* __restrict__ prefix, int n,
                                   const double* __restrict__ partials, AccumView acc) {
   const int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
   if (i >= n) return;
-  double sums[kPairPartials] = {};
+  constexpr int P = kPairPartials<Charges>;
+  double sums[P] = {};
   for (long long item = prefix[i]; item < prefix[i + 1]; ++item) {
 #pragma unroll
-    for (int c = 0; c < kPairPartials; ++c) sums[c] += partials[kPairPartials * item + c];
+    for (int c = 0; c < P; ++c) sums[c] += partials[P * item + c];
   }
   acc.e_pair[i] += sums[0];
   acc.g[i] += sums[1];
@@ -157,6 +137,7 @@ __global__ void pair_items_reduce(const long long* __restrict__ prefix, int n,
   acc.grad[3 * i + 2] += sums[4];
 #pragma unroll
   for (int c = 0; c < 6; ++c) acc.vir[c * n + i] += sums[5 + c];
+  if constexpr (Charges) acc.gq[i] += sums[11];
 }
 
 constexpr int kReversePartials = 9;  // grad[3], vir[6]
@@ -218,12 +199,6 @@ __global__ void cn_reverse_items_reduce(const long long* __restrict__ prefix, in
   for (int c = 0; c < 6; ++c) acc.vir[c * n + i] += sums[3 + c];
 }
 
-unsigned item_blocks(long long items) {
-  return static_cast<unsigned>((items + kWarpsPerBlock - 1) / kWarpsPerBlock);
-}
-
-unsigned centre_blocks(int n) { return static_cast<unsigned>((n + 127) / 128); }
-
 }  // namespace
 
 void launch_cn_items(const GeometryView& g, const ModelView& m, const GraphView& graph,
@@ -243,18 +218,27 @@ void launch_pair_items(const GeometryView& g, const ModelView& m, const GraphVie
                        const ContractedView& cv, const AccumView& acc, double* partials,
                        cudaStream_t stream) {
   if (g.n == 0 || items == 0) return;
+  // Charge derivatives (D4) come with the CN derivatives and need dU/dq.
+  const bool charges = dw != nullptr && cv.dq != nullptr;
   dispatch_max_nref(m.max_nref, [&](auto max_nref) {
     constexpr int M = decltype(max_nref)::value;
-    if (dw != nullptr) {
-      pair_items_kernel<M, true><<<item_blocks(items), kWarpBlock, 0, stream>>>(
+    if (charges) {
+      pair_items_kernel<M, true, true><<<item_blocks(items), kWarpBlock, 0, stream>>>(
+          g, m, graph, prefix, items, w, dw, cv, partials);
+    } else if (dw != nullptr) {
+      pair_items_kernel<M, true, false><<<item_blocks(items), kWarpBlock, 0, stream>>>(
           g, m, graph, prefix, items, w, dw, cv, partials);
     } else {
-      pair_items_kernel<M, false><<<item_blocks(items), kWarpBlock, 0, stream>>>(
+      pair_items_kernel<M, false, false><<<item_blocks(items), kWarpBlock, 0, stream>>>(
           g, m, graph, prefix, items, w, dw, cv, partials);
     }
   });
   VF_LAUNCH_CHECK(stream);
-  pair_items_reduce<<<centre_blocks(g.n), 128, 0, stream>>>(prefix, g.n, partials, acc);
+  if (charges) {
+    pair_items_reduce<true><<<centre_blocks(g.n), 128, 0, stream>>>(prefix, g.n, partials, acc);
+  } else {
+    pair_items_reduce<false><<<centre_blocks(g.n), 128, 0, stream>>>(prefix, g.n, partials, acc);
+  }
   VF_LAUNCH_CHECK(stream);
 }
 

@@ -7,6 +7,24 @@ from pathlib import Path
 from typing import Any
 
 STAGES = ("upload", "neighbors", "cn_weights", "pair", "atm", "cn_reverse", "reduce")
+D4_STAGES = (
+    "upload",
+    "neighbors",
+    "cn",
+    "eeq_setup",
+    "eeq_solve",
+    "weights",
+    "pair",
+    "eeq_adjoint",
+    "atm",
+    "eeq_reverse",
+    "cn_reverse",
+    "reduce",
+)
+
+
+def _is_d4(case: dict[str, Any]) -> bool:
+    return "/d4" in case["case_id"]
 
 
 def _median(case: dict[str, Any], mode: str) -> float | None:
@@ -21,10 +39,11 @@ def _ms(value: float | None) -> str:
 
 
 def _speed(cases: list[dict[str, Any]]) -> list[str]:
+    reference = "dftd4" if cases and all(_is_d4(c) for c in cases) else "dftd3"
     lines = [
         (
             "| case | edges (pair / ATM) | ATM triangles | warm native ms (p10-p90) "
-            "| ASE E+F ms | ASE E+F+S ms | rebuild ms | dftd3 ms | speedup | max ΔF eV/Å |"
+            f"| ASE E+F ms | ASE E+F+S ms | rebuild ms | {reference} ms | speedup | max ΔF eV/Å |"
         ),
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
@@ -34,31 +53,31 @@ def _speed(cases: list[dict[str, Any]]) -> list[str]:
         native = None if not wall else float(wall["median"])
         spread = "" if not wall else f" ({_ms(wall['p10'])}-{_ms(wall['p90'])})"
         errors = case.get("errors") or {}
-        reference = errors.get("reference_wall_ms")
-        speedup = "n/a" if reference is None or not native else f"{reference / native:.0f}x"
+        reference_ms = errors.get("reference_wall_ms")
+        speedup = "n/a" if reference_ms is None or not native else f"{reference_ms / native:.0f}x"
         triangles = counts.get("atm_accepted", 0) if "atm" in case["case_id"] else 0
         force = errors.get("force_max_ev_per_ang")
         edges = f"{counts.get('pair_edges', 0):,} / {counts.get('atm_edges', 0):,}"
         lines.append(
             f"| {case['case_id']} | {edges} | {triangles:,} | {_ms(native)}{spread}"
             f" | {_ms(_median(case, 'warm_ase_ef'))} | {_ms(_median(case, 'warm_ase_efs'))}"
-            f" | {_ms(_median(case, 'rebuild'))} | {_ms(reference)} | {speedup}"
+            f" | {_ms(_median(case, 'rebuild'))} | {_ms(reference_ms)} | {speedup}"
             f" | {'n/a' if force is None else f'{force:.1e}'} |"
         )
     return lines
 
 
-def _stages(cases: list[dict[str, Any]]) -> list[str]:
+def _stages(cases: list[dict[str, Any]], stage_names: tuple[str, ...] = STAGES) -> list[str]:
     lines = [
-        "| case | " + " | ".join(STAGES) + " | GPU total | wall |",
-        "| --- |" + " ---: |" * (len(STAGES) + 2),
+        "| case | " + " | ".join(stage_names) + " | GPU total | wall |",
+        "| --- |" + " ---: |" * (len(stage_names) + 2),
     ]
     for case in cases:
         native = case.get("modes", {}).get("warm_native", {})
         stages = native.get("gpu_stage_ms")
         if not stages:
             continue
-        cells = [_ms(stages.get(s)) for s in STAGES]
+        cells = [_ms(stages.get(s)) for s in stage_names]
         total = sum(float(v) for v in stages.values())
         lines.append(
             f"| {case['case_id']} | " + " | ".join(cells) + f" | {_ms(total)}"
@@ -115,11 +134,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         _override_reference(document, json.loads(args.reference_timings.read_text("utf-8")))
     cases = [c for c in document["cases"] if c["status"] == "ok"]
     failed = [f"{c['case_id']}: {c['status']}" for c in document["cases"] if c["status"] != "ok"]
-    for title, table in (
-        ("Warm evaluation", _speed(cases)),
-        ("GPU stages (warm native, ms)", _stages(cases)),
-        ("Cold start", _cold(cases)),
-    ):
+    d3 = [c for c in cases if not _is_d4(c)]
+    d4 = [c for c in cases if _is_d4(c)]
+    tables = [("Warm evaluation", _speed(cases))]
+    if d3:
+        tables.append(("GPU stages (warm native, ms)", _stages(d3)))
+    if d4:
+        tables.append(("D4 GPU stages (warm native, ms)", _stages(d4, D4_STAGES)))
+    tables.append(("Cold start", _cold(cases)))
+    for title, table in tables:
         print(f"### {title}\n")
         print("\n".join(table))
         print()

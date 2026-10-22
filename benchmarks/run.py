@@ -4,6 +4,7 @@ Examples::
 
     python benchmarks/run.py --suite smoke
     python benchmarks/run.py --workloads mgo-rocksalt --sizes 64,512,4096 --atm both
+    python benchmarks/run.py --model d4 --suite standard --atm off
 """
 
 import argparse
@@ -27,10 +28,14 @@ from schema import Case, Timing, envelope, write
 from workloads import GENERATOR_VERSION, WORKLOADS, perturbed
 
 from vanderfast import resolve_parameters
-from vanderfast.ase import D3Calculator
+from vanderfast.ase import D3Calculator, D4Calculator
 from vanderfast.context import D3Context
+from vanderfast.context_d4 import D4Context
 from vanderfast.diagnostics import backend_info
 from vanderfast.parameters import Cutoffs, D3BJParameters
+from vanderfast.parameters_d4 import D4Cutoffs, D4Parameters, resolve_d4_parameters
+
+Parameters = D3BJParameters | D4Parameters
 
 
 @dataclass(frozen=True)
@@ -68,6 +73,32 @@ t3 = time.perf_counter()
 print(json.dumps({"import_ms": 1e3 * (t1 - t0), "context_ms": 1e3 * (t2 - t1),
                   "first_eval_ms": 1e3 * (t3 - t2)}))
 """
+COLD_SCRIPT_D4 = """
+import json, sys, time
+t0 = time.perf_counter()
+import numpy as np
+import vanderfast
+from vanderfast.context_d4 import D4Context
+from vanderfast.parameters_d4 import D4Parameters
+t1 = time.perf_counter()
+args = json.load(sys.stdin)
+ctx = D4Context(np.array(args["numbers"]), D4Parameters(**args["parameters"]), skin=args["skin"],
+                ewald=args["ewald"])
+t2 = time.perf_counter()
+ctx.evaluate(np.array(args["positions"]), cell=np.array(args["cell"]), pbc=args["pbc"],
+             properties=("energy", "forces"))
+t3 = time.perf_counter()
+print(json.dumps({"import_ms": 1e3 * (t1 - t0), "context_ms": 1e3 * (t2 - t1),
+                  "first_eval_ms": 1e3 * (t3 - t2)}))
+"""
+
+
+def _is_d4(parameters: Parameters) -> bool:
+    return isinstance(parameters, D4Parameters)
+
+
+def _atm(parameters: Parameters) -> bool:
+    return parameters.s9 != 0.0 if isinstance(parameters, D4Parameters) else parameters.atm
 
 
 def _cell(atoms: Atoms) -> np.ndarray | None:
@@ -101,12 +132,13 @@ class Run:
     """Shared state of one benchmark case."""
 
     atoms: Atoms
-    parameters: D3BJParameters
-    ctx: D3Context
+    parameters: Parameters
+    ctx: D3Context | D4Context
     repeats: int
     warmup: int
     skin: float
     seed: int
+    ewald: str = "upstream"
 
     @property
     def cell(self) -> np.ndarray | None:
@@ -140,7 +172,11 @@ def mode_warm_native(run: Run) -> dict[str, Any]:
 
 def mode_ase(run: Run, stress: bool) -> dict[str, Any]:
     """Time the ASE calculator; fail if any call was served from the result cache."""
-    calc = D3Calculator(parameters=run.parameters, skin=run.skin)
+    calc: D3Calculator | D4Calculator
+    if isinstance(run.parameters, D4Parameters):
+        calc = D4Calculator(parameters=run.parameters, skin=run.skin, ewald=run.ewald)
+    else:
+        calc = D3Calculator(parameters=run.parameters, skin=run.skin)
     moving = run.atoms.copy()
     moving.calc = calc
 
@@ -199,8 +235,10 @@ def mode_cold(run: Run) -> dict[str, Any]:
         "positions": run.atoms.positions.tolist(),
         "cell": run.atoms.cell[:].tolist(),
         "pbc": [bool(p) for p in run.atoms.pbc],
+        "ewald": run.ewald,
     }
-    command = [sys.executable, "-c", COLD_SCRIPT]
+    script = COLD_SCRIPT_D4 if _is_d4(run.parameters) else COLD_SCRIPT
+    command = [sys.executable, "-c", script]
     output = subprocess.run(
         command, input=json.dumps(payload), capture_output=True, text=True, check=True
     ).stdout
@@ -216,36 +254,51 @@ def _run_mode(handler: Callable[[Run], dict[str, Any]], run: Run) -> dict[str, A
         return {"status": f"error: {type(error).__name__}: {error}"}
 
 
+def _case_id(workload: str, n_atoms: int, parameters: Parameters, ewald: str) -> str:
+    """``workload/N=n/pair|atm``, with ``/d4`` (and the Ewald mode if not upstream) for D4."""
+    case_id = f"{workload}/N={n_atoms}/{'atm' if _atm(parameters) else 'pair'}"
+    if _is_d4(parameters):
+        case_id += "/d4" if ewald == "upstream" else f"/d4-{ewald}"
+    return case_id
+
+
 def run_case(
     workload: str,
     size: int,
-    parameters: D3BJParameters,
+    parameters: Parameters,
     *,
     modes: Sequence[str],
     repeats: int,
     warmup: int,
     skin: float,
     seed: int = 1234,
+    ewald: str = "upstream",
 ) -> tuple[Case, Atoms]:
     """Benchmark one workload, size, and parameter set; return the case and structure."""
     atoms = WORKLOADS[workload].build(size, seed)
-    label = "atm" if parameters.atm else "pair"
+    d4 = isinstance(parameters, D4Parameters)
     case = Case(
-        case_id=f"{workload}/N={len(atoms)}/{label}",
+        case_id=_case_id(workload, len(atoms), parameters, ewald),
         family=WORKLOADS[workload].family,
         structure=_structure(atoms, workload, seed),
         parameters=parameters.as_dict(),
-        cutoffs_bohr=Cutoffs().as_bohr(),
+        cutoffs_bohr=(D4Cutoffs() if d4 else Cutoffs()).as_bohr(),
         skin_angstrom=skin,
         precision="float64",
     )
-    ctx: D3Context | None = None
+    ctx: D3Context | D4Context | None = None
     try:
-        ctx = D3Context(atoms.numbers, parameters, skin=skin, profile=True)
-        run = Run(atoms, parameters, ctx, repeats, warmup, skin, seed)
+        if isinstance(parameters, D4Parameters):
+            ctx = D4Context(atoms.numbers, parameters, skin=skin, ewald=ewald, profile=True)  # type: ignore[arg-type]
+        else:
+            ctx = D3Context(atoms.numbers, parameters, skin=skin, profile=True)
+        run = Run(atoms, parameters, ctx, repeats, warmup, skin, seed, ewald)
         first = ctx.evaluate(atoms.positions, cell=run.cell, pbc=atoms.pbc, properties=("forces",))
         keys = ("cn_edges", "pair_edges", "atm_edges", "atm_candidates", "atm_accepted")
         case.counts = {k: int(first.info[k]) for k in keys}
+        if d4:
+            for key in ("eeq_iterations", "eeq_adjoint_iterations", "eeq_matrix_bytes"):
+                case.counts[key] = int(first.info[key])
         handlers: dict[str, Callable[[Run], dict[str, Any]]] = {
             "warm-native": mode_warm_native,
             "warm-ase-ef": lambda r: mode_ase(r, stress=False),
@@ -268,6 +321,52 @@ def run_case(
         if ctx is not None:
             ctx.close()
     return case, atoms
+
+
+def reference_errors_d4(atoms: Atoms, parameters: D4Parameters, ewald: str) -> dict[str, Any]:
+    """Time dftd4 on the CPU and compare energies, forces, stress, and charges."""
+    from vanderfast.reference_d4 import D4ReferenceEvaluator, reference_version  # noqa: PLC0415
+    from vanderfast.units import (  # noqa: PLC0415
+        HARTREE,
+        gradient_to_forces_d4,
+        length_to_bohr_d4,
+        strain_derivative_to_stress_d4,
+    )
+
+    cell = _cell(atoms)
+    evaluator = D4ReferenceEvaluator(atoms.numbers, parameters)
+    x = length_to_bohr_d4(atoms.positions)
+    h = None if cell is None else length_to_bohr_d4(cell)
+    samples = []
+    for _ in range(REFERENCE_REPEATS):
+        start = time.perf_counter()
+        evaluator.evaluate(x, h, atoms.pbc, gradient=True)
+        samples.append(1e3 * (time.perf_counter() - start))
+    # The charges come from dftd4's property call, which is not timed.
+    reference = evaluator.evaluate(x, h, atoms.pbc, gradient=True, properties=True)
+    properties = ("forces", "stress") if atoms.pbc.any() else ("forces",)
+    with D4Context(atoms.numbers, parameters, ewald=ewald) as ctx:  # type: ignore[arg-type]
+        ours = ctx.evaluate(atoms.positions, cell=cell, pbc=atoms.pbc, properties=properties)
+    if reference.gradient is None or ours.forces is None:
+        msg = "missing gradients"
+        raise RuntimeError(msg)
+    forces = gradient_to_forces_d4(reference.gradient)
+    omp = os.environ.get("OMP_NUM_THREADS", "unset")
+    blas = os.environ.get("OPENBLAS_NUM_THREADS", "unset")
+    result: dict[str, Any] = {
+        "vs": f"dftd4 {reference_version()} (OMP_NUM_THREADS={omp}, OPENBLAS_NUM_THREADS={blas})",
+        "reference_wall_ms": float(np.median(samples)),
+        "energy_abs_ev": abs(ours.energy - reference.energy * HARTREE),
+        "energy_per_atom_ev": abs(ours.energy - reference.energy * HARTREE) / len(atoms),
+        "force_max_ev_per_ang": float(np.abs(ours.forces - forces).max()),
+        "force_rms_ev_per_ang": float(np.sqrt(np.mean((ours.forces - forces) ** 2))),
+    }
+    if reference.charges is not None:
+        result["charge_max_e"] = float(np.abs(ours.charges - reference.charges).max())
+    if ours.stress is not None and reference.virial is not None:
+        stress = strain_derivative_to_stress_d4(reference.virial, atoms.get_volume())
+        result["stress_max_ev_per_ang3"] = float(np.abs(ours.stress - stress).max())
+    return result
 
 
 def reference_errors(atoms: Atoms, parameters: D3BJParameters) -> dict[str, Any]:
@@ -333,6 +432,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--skin", type=float, default=1.0, help="Å")
     parser.add_argument("--method", default="pbe")
+    parser.add_argument("--model", choices=("d3", "d4"), default="d3")
+    parser.add_argument(
+        "--ewald", choices=("upstream", "converged"), default="upstream", help="D4 periodic charges"
+    )
     parser.add_argument("--reference-max-atoms", type=int, default=1024)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
@@ -354,14 +457,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         info["reference_data"],
     )
     cases: list[Case] = []
-    pending: list[tuple[Case, Atoms, D3BJParameters]] = []
+    pending: list[tuple[Case, Atoms, Parameters]] = []
     for workload in workloads:
         for size in sizes[:1] if WORKLOADS[workload].fixed_size else sizes:
             for flag in atm:
-                parameters = resolve_parameters(method=args.method, damping="bj", atm=flag)
+                parameters: Parameters = (
+                    resolve_d4_parameters(method=args.method, atm=flag)
+                    if args.model == "d4"
+                    else resolve_parameters(method=args.method, damping="bj", atm=flag)
+                )
                 case, atoms = run_case(
                     workload, size, parameters, modes=modes, repeats=repeats, warmup=args.warmup,
-                    skin=args.skin,
+                    skin=args.skin, ewald=args.ewald,
                 )  # fmt: skip
                 cases.append(case)
                 if len(atoms) <= args.reference_max_atoms and not case.status.startswith("error"):
@@ -371,15 +478,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"{case.case_id:40s} {case.status:6s} warm-native {timing}", flush=True)
     for case, atoms, parameters in pending:
         try:
-            case.errors = reference_errors(atoms, parameters)
+            if isinstance(parameters, D4Parameters):
+                case.errors = reference_errors_d4(atoms, parameters, args.ewald)
+            else:
+                case.errors = reference_errors(atoms, parameters)
         except Exception as error:  # noqa: BLE001
             case.errors = {"status": f"error: {type(error).__name__}: {error}"}
         reference = case.errors.get("reference_wall_ms")
         timing = "n/a" if reference is None else f"{reference:.2f} ms"
-        print(f"{case.case_id:40s} dftd3 {timing}", flush=True)
-    output = (
-        args.output or Path(__file__).parent / "results" / f"{args.suite}-{int(time.time())}.json"
-    )
+        print(f"{case.case_id:40s} {args.model.replace('d', 'dftd')} {timing}", flush=True)
+    stem = args.suite if args.model == "d3" else f"{args.suite}-{args.model}"
+    output = args.output or Path(__file__).parent / "results" / f"{stem}-{int(time.time())}.json"
     write(output, document, cases)
     print(f"wrote {output}")
     return 0 if all(case.status == "ok" for case in cases) else 1

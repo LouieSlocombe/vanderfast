@@ -1,2 +1,3 @@
 # pybind11 classes use the pybind11_type metaclass, which stubs cannot express.
 vanderfast._native.Context
+vanderfast._native.D4Context

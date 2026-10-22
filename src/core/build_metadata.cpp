@@ -8,6 +8,7 @@ std::map<std::string, std::string> build_info() {
   return {
       {"version", VANDERFAST_VERSION},
       {"reference_sha256", VANDERFAST_REFERENCE_SHA256},
+      {"d4_reference_sha256", VANDERFAST_D4_REFERENCE_SHA256},
       {"build_type", VANDERFAST_BUILD_TYPE},
       {"cxx_compiler", VANDERFAST_CXX_COMPILER},
       {"cuda_compiler", VANDERFAST_CUDA_COMPILER},

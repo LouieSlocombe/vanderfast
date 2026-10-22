@@ -19,9 +19,19 @@ def test_methods_lists_canonical_names(capsys: pytest.CaptureFixture[str]) -> No
     assert any(line.startswith("pbe ") for line in lines)
 
 
+def test_methods_lists_d4_functionals(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["methods", "--model", "d4"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 118
+    assert any(line.startswith("pbe ") and "s8=0.959481" in line for line in lines)
+    assert any(line.startswith("dftb3 ") for line in lines)
+
+
 def test_verify_data(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["verify-data"]) == 0
-    assert "simple-dftd3 v1.6.0" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "simple-dftd3 v1.6.0" in output
+    assert "D4 reference data OK: dftd4 v4.2.0" in output
 
 
 def test_info_reports_provenance(capsys: pytest.CaptureFixture[str]) -> None:
@@ -29,6 +39,7 @@ def test_info_reports_provenance(capsys: pytest.CaptureFixture[str]) -> None:
     report = json.loads(capsys.readouterr().out)
     assert report["package_version"] == __version__
     assert report["reference_data"]["supported_atomic_numbers"] == {"min": 1, "max": 103}
+    assert report["reference_data_d4"]["source"].startswith("dftd4 v4.2.0")
     assert main(["info"]) == 0
     assert "reference_data" in capsys.readouterr().out
 

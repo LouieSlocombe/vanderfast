@@ -70,3 +70,24 @@ def strain_derivative_to_stress(strain_derivative: npt.ArrayLike, volume: float)
     matrix = np.asarray(strain_derivative, dtype=np.float64).reshape(3, 3)
     scaled = matrix * (HARTREE / float(volume))
     return scaled.flat[list(STRESS_VOIGT_ORDER)].copy()
+
+
+# D4 boundary recipes: those of the upstream ``dftd4.ase`` calculator, so D4
+# results agree with it to the last bit of the conversion.
+
+
+def length_to_bohr_d4(values: npt.ArrayLike) -> FloatArray:
+    """Convert positions or cell vectors from Ångström to bohr (``x / Bohr``)."""
+    return np.asarray(values, dtype=np.float64) / BOHR
+
+
+def gradient_to_forces_d4(gradient: npt.ArrayLike) -> FloatArray:
+    """Convert a gradient in hartree/bohr to forces in eV/Å (``-g * Hartree / Bohr``)."""
+    return -np.asarray(gradient, dtype=np.float64) * HARTREE / BOHR
+
+
+def strain_derivative_to_stress_d4(strain_derivative: npt.ArrayLike, volume: float) -> FloatArray:
+    """Convert dE/dstrain (hartree) to ASE Voigt stress in eV/Å³ (``virial * Hartree / V``)."""
+    matrix = np.asarray(strain_derivative, dtype=np.float64).reshape(3, 3)
+    scaled = matrix * HARTREE / float(volume)
+    return scaled.flat[list(STRESS_VOIGT_ORDER)].copy()

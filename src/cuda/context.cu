@@ -13,6 +13,7 @@
 #include "device_model.cuh"
 #include "neighbor.cuh"
 #include "kernels.cuh"
+#include "pipeline.cuh"
 #include "resources.cuh"
 #include "vanderfast/context.hpp"
 #include "vanderfast/error.hpp"
@@ -22,115 +23,18 @@ namespace vanderfast {
 using cuda::DeviceBuffer;
 using cuda::DeviceGuard;
 using cuda::PinnedBuffer;
+using cuda::StageTimer;
 
 namespace {
 
 constexpr int kSumColumns = 8;  // e_pair, e_atm, six virial components
-constexpr long long kBruteForceLimit = 1LL << 24;  // candidate pairs for the O(N^2) builder
-
-// Bin the search basis with bins of about half the largest radius, capped at
-// max(64, 4N) bins. The stencil reach is conservative for every direction.
-cuda::CellGrid make_grid(const Lattice& lattice, const double* x, std::size_t n, double rmax) {
-  cuda::CellGrid grid;
-  std::memcpy(grid.inverse, lattice.inverse.data(), sizeof(grid.inverse));
-  double lo[3] = {0.0, 0.0, 0.0};
-  double hi[3] = {0.0, 0.0, 0.0};
-  for (std::size_t i = 0; i < n; ++i) {
-    for (int k = 0; k < 3; ++k) {
-      const double s = x[3 * i] * grid.inverse[k] + x[3 * i + 1] * grid.inverse[3 + k] +
-                       x[3 * i + 2] * grid.inverse[6 + k];
-      lo[k] = i == 0 ? s : std::min(lo[k], s);
-      hi[k] = i == 0 ? s : std::max(hi[k], s);
-    }
-  }
-  const double width = rmax / 2.0;
-  double extent[3];
-  for (int k = 0; k < 3; ++k) {
-    grid.periodic[k] = lattice.pbc[static_cast<std::size_t>(k)] ? 1 : 0;
-    if (grid.periodic[k]) {
-      if (std::max(std::fabs(lo[k]), std::fabs(hi[k])) > 1.0e9) {
-        fail(ErrorCode::InvalidGeometry, "positions are too far outside the periodic cell");
-      }
-      extent[k] = lattice.spacing[static_cast<std::size_t>(k)];
-    } else {
-      extent[k] = hi[k] - lo[k];
-      grid.origin[k] = lo[k];
-    }
-    grid.nb[k] = extent[k] > 0.0 ? std::max(1, static_cast<int>(std::floor(extent[k] / width))) : 1;
-  }
-  const long long limit = std::max<long long>(64, 4 * static_cast<long long>(n));
-  while (grid.bins() > limit) {
-    int largest = 0;
-    for (int k = 1; k < 3; ++k) {
-      if (grid.nb[k] > grid.nb[largest]) largest = k;
-    }
-    grid.nb[largest] = std::max(1, grid.nb[largest] / 2);
-  }
-  for (int k = 0; k < 3; ++k) {
-    if (grid.periodic[k]) {
-      grid.scale[k] = grid.nb[k];
-      grid.reach[k] = static_cast<int>(std::floor(rmax * grid.nb[k] / extent[k])) + 1;
-    } else if (extent[k] > 0.0) {
-      grid.scale[k] = grid.nb[k] / extent[k];
-      grid.reach[k] = std::min(static_cast<int>(std::floor(rmax * grid.scale[k])) + 1, grid.nb[k] - 1);
-    } else {
-      grid.scale[k] = 0.0;
-      grid.reach[k] = 0;
-    }
-    if (grid.reach[k] > (1 << 20)) {
-      fail(ErrorCode::InvalidGeometry, "the cell is too thin for the cutoff");
-    }
-  }
-  return grid;
-}
-
-int checked_device(int device) {
-  int count = 0;
-  const cudaError_t status = cudaGetDeviceCount(&count);
-  if (status != cudaSuccess || count == 0) {
-    cudaGetLastError();
-    fail(ErrorCode::CudaUnavailable,
-         std::string("no CUDA device is available (") + cudaGetErrorString(status) + ")");
-  }
-  if (device < 0 || device >= count) {
-    fail(ErrorCode::InvalidArgument, "CUDA device " + std::to_string(device) + " does not exist (" +
-                                         std::to_string(count) + " available)");
-  }
-  return device;
-}
 
 }  // namespace
-
-// Optional CUDA-event timings of the pipeline stages (stream time between marks).
-class StageTimer {
- public:
-  StageTimer(bool enabled, cudaStream_t stream, std::vector<cuda::Event>& pool)
-      : enabled_(enabled), stream_(stream), pool_(pool) {}
-  void mark(const char* name) {
-    if (!enabled_) return;
-    if (pool_.size() <= names_.size()) pool_.push_back(cuda::Event::create());
-    pool_[names_.size()].record(stream_);
-    names_.push_back(name);
-  }
-  void collect(std::map<std::string, double>& out) const {
-    for (std::size_t k = 1; k < names_.size(); ++k) {
-      float ms = 0.0f;
-      VF_CUDA_CHECK(cudaEventElapsedTime(&ms, pool_[k - 1].get(), pool_[k].get()));
-      out[names_[k]] = static_cast<double>(ms);
-    }
-  }
-
- private:
-  bool enabled_;
-  cudaStream_t stream_;
-  std::vector<cuda::Event>& pool_;
-  std::vector<const char*> names_;
-};
 
 struct D3Context::Impl {
   Impl(const std::int32_t* numbers_in, std::size_t n, const D3Parameters& params,
        const ContextOptions& opts, std::shared_ptr<const ReferenceData> ref)
-      : device(checked_device(opts.device)), options(opts), parameters(params), reference(std::move(ref)) {
+      : device(cuda::checked_device(opts.device)), options(opts), parameters(params), reference(std::move(ref)) {
     if (!reference) fail(ErrorCode::InvalidArgument, "reference data must not be null");
     parameters.validate();
     if (!(options.skin >= 0.0) || !std::isfinite(options.skin)) {
@@ -161,7 +65,7 @@ struct D3Context::Impl {
       using Buffer = std::decay_t<decltype(buffer)>;
       buffer = Buffer(pool.get(), stream.get(), &counters);
     };
-    graph = cuda::NeighborGraph(pool.get(), stream.get(), &counters);
+    neighbors = cuda::NeighborCache(pool.get(), stream.get(), &counters);
     make(cn);
     make(weights);
     make(dweights);
@@ -254,11 +158,8 @@ struct D3Context::Impl {
         parameters.pair_active() ? parameters.cutoffs.disp2 + options.skin : 0.0,
         parameters.atm_active() ? parameters.cutoffs.disp3 + options.skin : 0.0};
     timer.mark("upload");
-    if (needs_rebuild(geometry, lattice, radius)) {
-      build_graph(geometry, lattice, g, radius, result.info);
-    } else {
-      result.info.builder = last_builder;
-    }
+    neighbors.ensure(geometry, lattice, g, radius, options, optimized(), result.info, stats);
+    const cuda::NeighborGraph& graph = neighbors.graph;
     result.info.cn_edges = graph.edges(cuda::kViewCn);
     result.info.pair_edges = graph.edges(cuda::kViewPair);
     result.info.atm_edges = graph.edges(cuda::kViewAtm);
@@ -353,69 +254,10 @@ struct D3Context::Impl {
     return result;
   }
 
-  bool needs_rebuild(const Geometry& geometry, const Lattice& lattice,
-                     const std::array<double, cuda::kViewCount>& radius) const {
-    if (!graph_valid || graph_cell != geometry.cell || graph_pbc != geometry.pbc ||
-        graph_radius != radius || !(options.skin > 0.0)) {
-      return true;
-    }
-    for (int k = 0; k < 3; ++k) {
-      // A lattice-vector wrap of an atom must exceed the skin to be detected.
-      if (geometry.pbc[static_cast<std::size_t>(k)] &&
-          options.skin >= 2.0 * lattice.spacing[static_cast<std::size_t>(k)]) {
-        return true;
-      }
-    }
-    double max_d2 = 0.0;
-    for (std::size_t i = 0; i < 3 * geometry.n_atoms; i += 3) {
-      const double dx = geometry.positions[i] - graph_positions[i];
-      const double dy = geometry.positions[i + 1] - graph_positions[i + 1];
-      const double dz = geometry.positions[i + 2] - graph_positions[i + 2];
-      max_d2 = std::max(max_d2, dx * dx + dy * dy + dz * dz);
-    }
-    return 4.0 * max_d2 >= options.skin * options.skin;
-  }
-
-  void build_graph(const Geometry& geometry, const Lattice& lattice, const cuda::GeometryView& g,
-                   const std::array<double, cuda::kViewCount>& radius, EvalInfo& info) {
-    const std::size_t n = numbers.size();
-    graph_valid = false;
-    cuda::BandSpec bands = cuda::make_bands(radius);
-    bands.canonical_atm = optimized() ? 1 : 0;
-    const double rmax = std::max({radius[0], radius[1], radius[2]});
-    cuda::ImageBox box;
-    const std::array<int, 3> range = image_ranges(lattice, geometry.positions, n, rmax);
-    box.images = 1;
-    for (int k = 0; k < 3; ++k) {
-      box.range[k] = range[static_cast<std::size_t>(k)];
-      box.images = checked_mul<long long>(box.images, 2LL * box.range[k] + 1, "image count");
-    }
-    const long long candidates = checked_mul<long long>(
-        checked_mul<long long>(box.images, static_cast<long long>(n), "candidate count"),
-        static_cast<long long>(n), "candidate count");
-    const bool brute = options.builder == NeighborBuilder::BruteForce ||
-                       (options.builder == NeighborBuilder::Auto && candidates <= kBruteForceLimit);
-    const double min_r2 =
-        brute ? graph.build_brute_force(g, box, bands)
-              : graph.build_cell_bins(g, make_grid(lattice, geometry.positions, n, rmax), bands);
-    last_builder = brute ? "brute_force" : "cell_bins";
-    stats.rebuilds += 1;
-    if (options.reject_coincident && min_r2 < math::kCnExclusionR2) {
-      fail(ErrorCode::CoincidentSites,
-           "two distinct lattice sites are closer than 1e-6 bohr; the input geometry is unphysical");
-    }
-    graph_positions.assign(geometry.positions, geometry.positions + 3 * n);
-    graph_cell = geometry.cell;
-    graph_pbc = geometry.pbc;
-    graph_radius = radius;
-    graph_valid = true;
-    info.rebuilt = true;
-    info.builder = last_builder;
-  }
-
   void run_atm(const cuda::GeometryView& g, const cuda::ModelView& mv, const cuda::GraphView& gv,
                const cuda::ContractedView& cv, bool derivatives, bool split_atoms,
                const cuda::AccumView& accum, EvalInfo& info) {
+    const cuda::NeighborGraph& graph = neighbors.graph;
     const long long items = graph.atm_items();
     if (items == 0) return;
     cudaStream_t s = stream.get();
@@ -466,7 +308,7 @@ struct D3Context::Impl {
     }
     std::vector<long long> row_ptr;
     std::vector<int4> edges;
-    graph.download(row_ptr, edges);
+    neighbors.graph.download(row_ptr, edges);
     debug.edge_i.clear();
     debug.edge_j.clear();
     debug.edge_shift.clear();
@@ -484,12 +326,6 @@ struct D3Context::Impl {
   bool debug_derivatives = false;
   bool optimized() const noexcept { return options.kernels == KernelVariant::Optimized; }
   std::vector<cuda::Event> events;
-  bool graph_valid = false;
-  std::vector<double> graph_positions;
-  std::array<double, 9> graph_cell{};
-  std::array<bool, 3> graph_pbc{};
-  std::array<double, cuda::kViewCount> graph_radius{};
-  const char* last_builder = "none";
   std::mutex mutex;
   bool poisoned = false;
   int device;
@@ -503,7 +339,7 @@ struct D3Context::Impl {
   cuda::Stream stream;
   cuda::MemoryPool pool;
   cuda::DeviceModel model;
-  cuda::NeighborGraph graph;
+  cuda::NeighborCache neighbors;
   DeviceBuffer<double> cn;
   DeviceBuffer<double> weights;
   DeviceBuffer<double> dweights;
@@ -544,7 +380,7 @@ HostResult D3Context::evaluate(const Geometry& geometry, unsigned properties) {
   try {
     return impl_->run(geometry, properties, nullptr);
   } catch (const Error& error) {
-    impl_->graph_valid = false;
+    impl_->neighbors.invalidate();
     if (error.code() == ErrorCode::CudaRuntime) impl_->poisoned = true;
     throw;
   }
@@ -559,7 +395,7 @@ DebugResult D3Context::debug(const Geometry& geometry, bool derivatives) {
   try {
     impl_->run(geometry, derivatives ? kEnergy | kGradient : kEnergy, &debug);
   } catch (const Error& error) {
-    impl_->graph_valid = false;
+    impl_->neighbors.invalidate();
     if (error.code() == ErrorCode::CudaRuntime) impl_->poisoned = true;
     throw;
   }
@@ -576,7 +412,7 @@ void D3Context::set_parameters(const D3Parameters& parameters) {
   impl_->stream.synchronize();
 }
 
-void D3Context::invalidate_neighbors() noexcept { impl_->graph_valid = false; }
+void D3Context::invalidate_neighbors() noexcept { impl_->neighbors.invalidate(); }
 
 std::size_t D3Context::n_atoms() const noexcept { return impl_->numbers.size(); }
 const D3Parameters& D3Context::parameters() const noexcept { return impl_->parameters; }
@@ -586,7 +422,7 @@ ContextStats D3Context::stats() const {
   ContextStats stats = impl_->stats;
   stats.allocations = impl_->counters.allocations;
   stats.device_bytes = impl_->counters.device_bytes;
-  stats.capacity_edges = impl_->graph.capacity();
+  stats.capacity_edges = impl_->neighbors.graph.capacity();
   return stats;
 }
 
