@@ -1,0 +1,23 @@
+# Oldest dependency versions allowed by pyproject.toml (CPU tests only).
+name: vanderfast-dev
+
+channels:
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  - python=3.14
+  - pip>=25.1
+  - numpy=2.3.3
+  - ase=3.26
+  - dftd3-python=1.6.0
+  - simple-dftd3=1.6.0
+  - dftd4-python=4.2.0
+  - dftd4=4.2.0
+  - multicharge=0.5.0
+  - scikit-build-core=1.1.1
+  - pybind11=3.0.1
+  - cmake>=4.1
+  - ninja
+  - pytest>=9.1.1
+  - pytest-cov>=7.1.0

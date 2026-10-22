@@ -53,15 +53,15 @@ def _speed(cases: list[dict[str, Any]]) -> list[str]:
         native = None if not wall else float(wall["median"])
         spread = "" if not wall else f" ({_ms(wall['p10'])}-{_ms(wall['p90'])})"
         errors = case.get("errors") or {}
-        reference = errors.get("reference_wall_ms")
-        speedup = "n/a" if reference is None or not native else f"{reference / native:.0f}x"
+        reference_ms = errors.get("reference_wall_ms")
+        speedup = "n/a" if reference_ms is None or not native else f"{reference_ms / native:.0f}x"
         triangles = counts.get("atm_accepted", 0) if "atm" in case["case_id"] else 0
         force = errors.get("force_max_ev_per_ang")
         edges = f"{counts.get('pair_edges', 0):,} / {counts.get('atm_edges', 0):,}"
         lines.append(
             f"| {case['case_id']} | {edges} | {triangles:,} | {_ms(native)}{spread}"
             f" | {_ms(_median(case, 'warm_ase_ef'))} | {_ms(_median(case, 'warm_ase_efs'))}"
-            f" | {_ms(_median(case, 'rebuild'))} | {_ms(reference)} | {speedup}"
+            f" | {_ms(_median(case, 'rebuild'))} | {_ms(reference_ms)} | {speedup}"
             f" | {'n/a' if force is None else f'{force:.1e}'} |"
         )
     return lines

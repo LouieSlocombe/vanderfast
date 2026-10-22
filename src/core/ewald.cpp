@@ -210,16 +210,18 @@ EwaldSetup upstream_ewald(const std::array<double, 9>& cell) {
   // Self images: the origin is dropped from the distance list, but the kept
   // positions index the full candidate list (multicharge get_pairs).
   std::vector<double> dist;
+  double best = DBL_MAX;
   for (std::size_t c = 0; c < 27; ++c) {
     const double* t = setup.ws_candidates.data() + 3 * c;
     const double r2 = t[0] * t[0] + t[1] * t[1] + t[2] * t[2];
     if (r2 < kEps) continue;
     dist.push_back(r2);
+    best = std::min(best, r2);
   }
+  if (dist.empty()) fail(ErrorCode::InvalidGeometry, "degenerate lattice: every lattice vector is zero");
   std::vector<std::size_t> order(dist.size());
   std::iota(order.begin(), order.end(), std::size_t{0});
   std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return dist[a] < dist[b]; });
-  const double best = dist[order[0]];
   for (std::size_t p : order) {
     if (std::fabs(dist[p] - best) > kWsTol) break;
     setup.self_images.insert(setup.self_images.end(), setup.ws_candidates.begin() + static_cast<std::ptrdiff_t>(3 * p),
