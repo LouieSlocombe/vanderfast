@@ -5,18 +5,19 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "vanderfast"
 version = "0.1.0.dev0"
-description = "GPU DFT-D3(BJ) dispersion energies, forces, and stress with an ASE calculator."
+description = "GPU DFT-D3(BJ) and DFT-D4 dispersion energies, forces, and stress with an ASE calculator."
 readme = "README.md"
 requires-python = ">=3.14"
 # vanderfast code is MIT; the bundled D3 reference tables derive from
-# simple-dftd3 (LGPL-3.0-or-later) and mctc-lib (Apache-2.0). See
+# simple-dftd3 (LGPL-3.0-or-later) and mctc-lib (Apache-2.0), the D4 tables
+# from dftd4 (LGPL-3.0-or-later), multicharge, and mctc-lib (Apache-2.0). See
 # THIRD_PARTY_NOTICES.md.
 license = "MIT AND LGPL-3.0-or-later AND Apache-2.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "data/licenses/*"]
 authors = [
   { name = "Louie Slocombe", email = "louies@hotmail.co.uk" },
 ]
-keywords = ["dispersion", "DFT-D3", "CUDA", "ASE", "molecular dynamics"]
+keywords = ["dispersion", "DFT-D3", "DFT-D4", "EEQ", "CUDA", "ASE", "molecular dynamics"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Operating System :: POSIX :: Linux",
@@ -33,8 +34,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Exact pin: the bundled tables and fixtures were generated from 1.6.0.
-reference = ["dftd3==1.6.0"]
+# Exact pins: the bundled tables and fixtures were generated from these releases.
+reference = ["dftd3==1.6.0", "dftd4==4.2.0"]
+reference-d3 = ["dftd3==1.6.0"]
+reference-d4 = ["dftd4==4.2.0"]
 
 [project.scripts]
 vanderfast = "vanderfast.__main__:main"
@@ -151,6 +154,7 @@ markers = [
   "native: needs the compiled vanderfast._native extension (no GPU required)",
   "cuda: needs a CUDA device",
   "reference: needs the dftd3 1.6.0 reference library",
+  "reference_d4: needs the dftd4 4.2.0 reference library",
   "slow: long-running; enabled with --run-slow",
 ]
 
@@ -272,5 +276,5 @@ pretty = true
 untyped_calls_exclude = ["ase"]
 
 [[tool.mypy.overrides]]
-module = ["dftd3", "dftd3.*"]
+module = ["dftd3", "dftd3.*", "dftd4", "dftd4.*"]
 ignore_missing_imports = true
