@@ -13,6 +13,9 @@ dependencies:
   # Pinned numerical reference (optional at runtime, required for fixtures/tests)
   - dftd3-python=1.6.0
   - simple-dftd3=1.6.0
+  - dftd4-python=4.2.0
+  - dftd4=4.2.0
+  - multicharge=0.5.0
   # Build backend and native toolchain (CUDA 13.1 accepts host GCC <= 15)
   - scikit-build-core>=1.1.1
   - pybind11>=3.0.1

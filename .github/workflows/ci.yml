@@ -111,6 +111,9 @@ jobs:
       - name: Regenerate the reference tables from the pinned sources
         run: python -I tools/generate_d3_data.py --check --verify-binary "$CONDA_PREFIX/lib"
 
+      - name: Regenerate the D4 reference tables from the pinned sources
+        run: python -I tools/generate_d4_data.py --check --verify-binary "$CONDA_PREFIX/lib"
+
       - name: Regenerate the dftd3 fixtures
         run: python tools/generate_fixtures.py --check
 

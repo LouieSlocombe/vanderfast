@@ -1,6 +1,7 @@
 # Developer entry points. Run inside the activated vanderfast-dev environment.
 PYTHON ?= python
 UPSTREAM ?=
+UPSTREAM_D4 ?=
 
 .PHONY: help env lock dev dev-cpu lint test test-gpu cpp-test sanitize stubtest wheel gpu-verify bench-smoke bench data data-check fixtures fixtures-check
 
@@ -74,9 +75,11 @@ gpu-verify:
 
 data:
 	$(PYTHON) -I tools/generate_d3_data.py $(UPSTREAM)
+	$(PYTHON) -I tools/generate_d4_data.py $(UPSTREAM_D4)
 
 data-check:
 	$(PYTHON) -I tools/generate_d3_data.py --check --verify-binary "$$CONDA_PREFIX/lib" $(UPSTREAM)
+	$(PYTHON) -I tools/generate_d4_data.py --check --verify-binary "$$CONDA_PREFIX/lib" $(UPSTREAM_D4)
 
 fixtures:
 	OMP_NUM_THREADS=1 $(PYTHON) tools/generate_fixtures.py

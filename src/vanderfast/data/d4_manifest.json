@@ -1,0 +1,447 @@
+{
+ "anomalies": {
+  "single_precision_literals": {
+   "note": "kind-less literals are default (binary32) reals; gfortran stores them widened to double, and so do these tables",
+   "targets": [
+    "ascale(4,38)",
+    "ascale(4,56)",
+    "clsh(4,38)",
+    "clsh(4,56)",
+    "clsq(4,38)",
+    "clsq(4,56)",
+    "dfth(4,38)",
+    "dfth(4,56)",
+    "dftq(4,38)",
+    "dftq(4,56)",
+    "gffh(4,38)",
+    "gffh(4,56)",
+    "gffq(4,38)",
+    "gffq(4,56)",
+    "hcount(4,38)",
+    "hcount(4,56)",
+    "pbch(4,38)",
+    "pbch(4,56)",
+    "pbcq(4,38)",
+    "pbcq(4,56)",
+    "refcn(4,38)",
+    "refcn(4,56)",
+    "refcovcn(4,38)",
+    "refcovcn(4,56)",
+    "refh(4,38)",
+    "refh(4,56)",
+    "refq(4,38)",
+    "refq(4,56)"
+   ]
+  },
+  "uninitialised_references": [
+   {
+    "Z": 92,
+    "reference": 3
+   },
+   {
+    "Z": 95,
+    "reference": 5
+   },
+   {
+    "Z": 98,
+    "reference": 6
+   }
+  ],
+  "uninitialised_secondary_systems": [
+   3,
+   4,
+   5,
+   12,
+   13,
+   14,
+   15,
+   16
+  ],
+  "unsupported_with_references": [
+   112,
+   113,
+   114,
+   115,
+   116,
+   117,
+   118
+  ],
+  "zero_polarizability_references": [
+   {
+    "Z": 92,
+    "reference": 3
+   },
+   {
+    "Z": 95,
+    "reference": 5
+   },
+   {
+    "Z": 98,
+    "reference": 6
+   }
+  ]
+ },
+ "conventions": {
+  "atm": {
+   "c6": "evaluated with every charge set to zero; its charge derivative is unused",
+   "c9": "-s9*sqrt(|c6ij*c6ik*c6jk|)",
+   "default_cutoff_bohr": 40.0,
+   "exponent": "alp/3 (alp = 16)",
+   "r0": "product of a1*sqrt(3*r4r2_i*r4r2_j) + a2 over the three pairs"
+  },
+  "charge_model": "EEQ 2019 (multicharge v0.5.0), Z = 1..103",
+  "cn_d4": {
+   "count": "en_factor * 0.5*(1 + erf(-7.5*(r - rc)/rc)), rc = rcov_i + rcov_j",
+   "default_cutoff_bohr": 30.0,
+   "en_factor": "4.10451*exp(-(|en_i - en_j| + 19.08857)^2 / (2*11.28174^2))",
+   "exclude_r2_below": 1e-12
+  },
+  "cn_eeq": {
+   "cap": "log(1 + e^8) - log(1 + e^(8 - cn)), derivative e^8/(e^8 + e^cn)",
+   "count": "0.5*(1 + erf(-7.5*(r - rc)/rc)), rc from mctc covalent_rad_d3",
+   "cutoff_bohr": 25.0
+  },
+  "eeq": {
+   "constraint": "bordered system with a row and column of ones, total charge",
+   "molecular": "A_ij = erf(sqrt(r^2/(rad_i^2 + rad_j^2)))/r, A_ii = eta + sqrt(2/pi)/rad",
+   "rhs": "-chi + kcnchi/sqrt(cn + 1e-14)*cn; derivative 0.5*kcnchi/sqrt(cn + 1e-14)"
+  },
+  "ewald_upstream": {
+   "alpha": "bisection balancing truncation terms, fallback 0.25",
+   "diagonal": "eta + sqrt(2/pi)/rad - 2 alpha/sqrt(pi) plus self images",
+   "images": "Wigner-Seitz: 27 lattice points, minimum r^2 plus ties within 0.01 bohr^2, weight 1/nimg; self pairs index the compacted distance list (off by one)",
+   "real": "125 translations (rep 2): erf(gam r)/r - erf(alpha r)/r, skip r < sqrt(eps)",
+   "reciprocal": "124 vectors: 4 pi/V cos(G.r) exp(-G^2/(4 alpha^2))/G^2",
+   "wrap": "positions wrapped to the central cell (eps 1e-14) before evaluation"
+  },
+  "pair": {
+   "default_cutoff_bohr": 60.0,
+   "exclude_r2_below": "DBL_EPSILON",
+   "kappa": "3*r4r2_i*r4r2_j",
+   "r0": "a1*sqrt(kappa) + a2"
+  },
+  "partial_pbc": "any periodic flag makes the system fully 3D periodic over the supplied cell, for dispersion and EEQ (dftd4 ignores per-direction flags)",
+  "source_lines": {
+   "api.atm_off": "src/dftd4/api.f90: s9 = 0.0_wp",
+   "api.atm_on": "src/dftd4/api.f90: s9 = 1.0_wp",
+   "api.wrap": "src/dftd4/api.f90: call wrap_to_central_cell(mol%ptr%xyz, mol%ptr%lattice, mol%ptr%periodic)",
+   "atm.alp3": "src/dftd4/damping/atm.f90: alp3 = alp / 3.0_wp",
+   "atm.c9": "src/dftd4/damping/atm.f90: c9 = -s9 * sqrt(abs(c6ij*c6ik*c6jk))",
+   "atm.enabled": "src/dftd4/damping/rational.f90: if (abs(self%s9) < epsilon(1.0_wp)) return",
+   "atm.fdmp": "src/dftd4/damping/atm.f90: fdmp = 1.0_wp / (1.0_wp + 6.0_wp * (r0 / r1)**alp3)",
+   "atm.r0": "src/dftd4/damping/atm.f90: r0ij = a1 * sqrt(3*r4r2(jzp)*r4r2(izp)) + a2",
+   "atm.third_edge": "src/dftd4/damping/atm.f90: vjk(:) = vik(:) - vij(:)",
+   "c6.trapezoid": "src/dftd4/model/utils.f90: trapzd = sum(pol*weights)",
+   "cn.cap": "src/mctc/ncoord/type.f90: cnp = log(1.0_wp + exp(cnmax)) - log(1.0_wp + exp(cnmax - cn))",
+   "cn.dcap": "src/mctc/ncoord/type.f90: dcnpdcn = exp(cnmax)/(exp(cnmax) + exp(cn))",
+   "cn.derf": "src/mctc/ncoord/erf.f90: count = -(self%kcn*expterm)/(sqrtpi*rc**self%norm_exp)",
+   "cn.en_factor": "src/mctc/ncoord/erf/dftd4.f90: en_factor = k4*exp(-(abs(self%en(izp)-self%en(jzp)) + k5)**2.0_wp/k6)",
+   "cn.erf": "src/mctc/ncoord/erf.f90: count = 0.5_wp * (1.0_wp + erf(-self%kcn*(r-rc)/rc**self%norm_exp))",
+   "cn.exclusion": "src/mctc/ncoord/type.f90: if (r2 > cutoff2 .or. r2 < 1.0e-12_wp) cycle",
+   "cn.k4": "src/mctc/ncoord/erf/dftd4.f90: real(wp), parameter :: k4 = 4.10451_wp",
+   "cn.k5": "src/mctc/ncoord/erf/dftd4.f90: real(wp), parameter :: k5 = 19.08857_wp",
+   "cn.k6": "src/mctc/ncoord/erf/dftd4.f90: real(wp), parameter :: k6 = 2*11.28174_wp**2.0_wp",
+   "cn.kcn": "src/dftd4/ncoord.f90: real(wp), parameter :: default_kcn = 7.5_wp",
+   "cutoff.any_periodic": "src/dftd4/cutoff.f90: if (.not.any(periodic)) then",
+   "cutoff.cn": "src/dftd4/cutoff.f90: real(wp), parameter :: cn_default = 30.0_wp",
+   "cutoff.disp2": "src/dftd4/cutoff.f90: real(wp), parameter :: disp2_default = 60.0_wp",
+   "cutoff.disp3": "src/dftd4/cutoff.f90: real(wp), parameter :: disp3_default = 40.0_wp",
+   "disp.atm_neutral": "src/dftd4/disp.f90: q(:) = 0.0_wp",
+   "disp.charge_chain": "src/dftd4/disp.f90: call d4_gemv(dqdr, dEdq, gradient, beta=1.0_wp)",
+   "disp.cn_derivs_lattice": "src/dftd4/disp.f90: call add_coordination_number_derivs(mol, lattr, cutoff%cn, disp%rcov, disp%en, dEdcn, gradient, sigma)",
+   "eeq.amat_0d": "src/multicharge/model/eeq.f90: tmp = erf(sqrt(r2 * gam)) / sqrt(r2)",
+   "eeq.cn_cutoff": "src/multicharge/param.f90: real(wp), parameter :: cutoff = 25.0_wp",
+   "eeq.cn_kcn": "src/multicharge/param.f90: real(wp), parameter :: cn_exp = 7.5_wp",
+   "eeq.cn_max": "src/multicharge/param.f90: real(wp), parameter :: cn_max = 8.0_wp",
+   "eeq.diag_0d": "src/multicharge/model/eeq.f90: tmp = self%eta(izp) + sqrt2pi / self%rad(izp)",
+   "eeq.diag_3d": "src/multicharge/model/eeq.f90: dtmp = self%eta(izp) + sqrt2pi / self%rad(izp) - 2 * alpha / sqrtpi",
+   "eeq.dir": "src/multicharge/model/eeq.f90: tmp = erf(gam * r1) / r1 - erf(alp * r1) / r1",
+   "eeq.dir_eps": "src/multicharge/model/eeq.f90: real(wp), parameter :: eps = sqrt(epsilon(0.0_wp))",
+   "eeq.gam_0d": "src/multicharge/model/eeq.f90: gam = 1.0_wp / (self%rad(izp)**2 + self%rad(jzp)**2)",
+   "eeq.gam_3d": "src/multicharge/model/eeq.f90: gam = 1.0_wp / sqrt(self%rad(izp)**2 + self%rad(jzp)**2)",
+   "eeq.gam_self": "src/multicharge/model/eeq.f90: gam = 1.0_wp / sqrt(2.0_wp * self%rad(izp)**2)",
+   "eeq.rcov": "src/multicharge/param.f90: rcov = get_covalent_rad(mol%num)",
+   "eeq.rec": "src/multicharge/model/eeq.f90: tmp = cos(dot_product(rij, vec)) * fac * exp(-0.25_wp * g2 / (alp * alp)) / g2",
+   "eeq.rec_strain": "src/multicharge/model/eeq.f90: ds(:, :) = ds + etmp * cos(gv) * ((2.0_wp / g2 + 0.5_wp / alp2) * spread(vec, 1, 3) * spread(vec, 2, 3) - unity)",
+   "eeq.reg": "src/multicharge/model/eeq.f90: real(wp), parameter :: reg = 1.0e-14_wp",
+   "eeq.solver": "src/multicharge/model/type.F90: call sytrf(ainv, ipiv, info=info, uplo='l')",
+   "eeq.xvec": "src/multicharge/model/eeq.f90: xvec(iat) = -self%chi(izp) + tmp * ptr%cn(iat)",
+   "eeq.xvec_derivative": "src/multicharge/model/eeq.f90: dxdr(:, :, iat) = 0.5_wp * tmp * ptr%dcndr(:, :, iat) + dxdr(:, :, iat)",
+   "eeq.xvec_tmp": "src/multicharge/model/eeq.f90: tmp = self%kcnchi(izp) / sqrt(ptr%cn(iat) + reg)",
+   "ewald.alpha0": "src/multicharge/ewald.f90: real(wp), parameter :: alpha0 = 1.0e-8_wp",
+   "ewald.dir": "src/multicharge/model/type.F90: call get_lattice_points(lattice, rep, .true., trans)",
+   "ewald.dir_term": "src/multicharge/ewald.f90: dval = erfc(alpha*rr)/rr",
+   "ewald.fallback": "src/multicharge/ewald.f90: alpha = 0.25_wp",
+   "ewald.niter": "src/multicharge/ewald.f90: integer, parameter :: niter = 30",
+   "ewald.rec": "src/multicharge/model/type.F90: call get_lattice_points(rec_lat, rep, .false., trans)",
+   "ewald.rec_lattice": "src/multicharge/model/type.F90: rec_lat = twopi * transpose(matinv_3x3(lattice))",
+   "ewald.rec_term": "src/multicharge/ewald.f90: rval = 4.0_wp*pi*(exp(-0.25_wp*gg*gg/(alpha**2))/(vol*gg*gg))",
+   "ewald.rep": "src/multicharge/model/type.F90: integer, parameter :: rep(3) = [2, 2, 2]",
+   "lattice.rep": "src/mctc/cutoff.f90: rep(1) = ceiling(abs(rthr/cos10))",
+   "lattice.translation": "src/mctc/cutoff.f90: trans(:, itr) = lat(:, 1)*ix*jx + lat(:, 2)*iy*jy + lat(:, 3)*iz*jz",
+   "methods.alp": "src/dftd4/param.f90: alp_ = 16.0_wp",
+   "methods.lowercase": "src/dftd4/param.f90: fname = lowercase(functional(:is-1))",
+   "methods.mbd": "src/dftd4/param.f90: if (present(s9)) mbd = abs(s9) > epsilon(s9)",
+   "methods.prefix": "src/dftd4/param.f90: is = index(functional, '/')",
+   "model.c6": "src/dftd4/model/d4.f90: c6 = thopi * trapzd(aiw)",
+   "model.c6_integrand": "src/dftd4/model/d4.f90: aiw(:) = d4%aiw(:, iref, isp) * d4%aiw(:, jref, jsp)",
+   "model.eeq": "src/dftd4/model/d4.f90: call new_eeq2019_model(mol, d4%mchrg, error)",
+   "model.ga": "src/dftd4/model/d4.f90: real(wp), parameter :: ga_default = 3.0_wp",
+   "model.gc": "src/dftd4/model/d4.f90: real(wp), parameter :: gc_default = 2.0_wp",
+   "model.thopi": "src/dftd4/model/d4.f90: real(wp), parameter :: thopi = 3.0_wp/pi",
+   "model.unsupported": "src/dftd4/model/d4.f90: if (mol%num(isp) > 103 .and. mol%num(isp) < 112) then",
+   "model.wf": "src/dftd4/model/d4.f90: real(wp), parameter :: wf_default = 6.0_wp",
+   "pair.exclusion": "src/dftd4/damping/rational.f90: if (r2 > cutoff2 .or. r2 < epsilon(1.0_wp)) cycle",
+   "pair.kappa": "src/dftd4/damping/rational.f90: rrij = 3*r4r2(izp)*r4r2(jzp)",
+   "pair.r0": "src/dftd4/damping/rational.f90: r0ij = self%a1 * sqrt(rrij) + self%a2",
+   "pair.skip": "src/dftd4/damping/rational.f90: if (abs(self%s6) < epsilon(1.0_wp) .and. abs(self%s8) < epsilon(1.0_wp)) return",
+   "pair.t6": "src/dftd4/damping/rational.f90: t6 = 1.0_wp/(r2**3 + r0ij**6)",
+   "pair.t8": "src/dftd4/damping/rational.f90: t8 = 1.0_wp/(r2**4 + r0ij**8)",
+   "reference.alpha": "src/dftd4/reference.f90: alpha(:, ir) = max(ascale(ir, num)*(alphaiw(:, ir, num) - hcount(ir, num)*aiw), 0.0_wp)",
+   "reference.charge": "src/dftd4/reference.f90: q(:ref) = clsq(:ref, num)",
+   "reference.cn": "src/dftd4/reference.f90: cn(:ref) = refcovcn(:ref, num)",
+   "reference.max_cn_bin": "src/dftd4/reference.f90: integer, parameter :: max_cn = 19",
+   "reference.ngw": "src/dftd4/reference.f90: ngw(ir) = icn*(icn+1)/2",
+   "reference.ngw_bin": "src/dftd4/reference.f90: icn = min(nint(refcn(ir, num)), max_cn)",
+   "reference.ngw_histogram_start": "src/dftd4/reference.f90: cnc(:) = [1, spread(0, 1, max_cn)]",
+   "reference.refsys_skip": "src/dftd4/reference.f90: if (abs(is) < 1e-12_wp) cycle",
+   "reference.secondary_alpha": "src/dftd4/reference.f90: aiw = sscale(is)*secaiw(:, is) * zeta(ga, get_hardness(is)*gc, iz, clsh(ir, num)+iz)",
+   "reference.secondary_zeff": "src/dftd4/reference.f90: iz = get_effective_charge(is)",
+   "weights.dgw": "src/dftd4/model/d4.f90: dgwk = norm * (expd - expw * dnorm * norm)",
+   "weights.dnorm": "src/dftd4/model/d4.f90: dnorm = dnorm + 2*wf * (self%cn(iref, izp) - cn(iat)) * gw",
+   "weights.eps_norm": "src/dftd4/model/d4.f90: real(wp), parameter :: eps_norm = tiny(1._wp)**0.5_wp",
+   "weights.fallback": "src/dftd4/model/d4.f90: if (is_exceptional(gwk) .or. norm == 0.0_wp) then",
+   "weights.fallback_ref": "src/dftd4/model/d4.f90: if (abs(maxcn - self%cn(iref, izp)) < 1e-12_wp) then",
+   "weights.gaussian": "src/dftd4/model/utils.f90: cngw = exp ( -wf * ( cn - cnref )**2 )",
+   "weights.hardness": "src/dftd4/model/d4.f90: gi = self%eta(izp) * self%gc",
+   "weights.norm_guard": "src/dftd4/model/d4.f90: if (abs(norm) > eps_norm) then",
+   "weights.wf": "src/dftd4/model/d4.f90: wf = igw * self%wf",
+   "weights.zeta": "src/dftd4/model/d4.f90: gwvec(iref, iat, 1) = gwk * zeta(self%ga, gi, self%q(iref, izp)+zi, q(iat)+zi)",
+   "wrap.eps": "src/mctc/cutoff.f90: real(wp),parameter :: p_pbc_eps = 1.0e-14_wp",
+   "wrap.high": "src/mctc/cutoff.f90: if(in > (1.0_wp + p_pbc_eps)) out = in - real(floor ( in),wp)",
+   "wrap.low": "src/mctc/cutoff.f90: if(in < (0.0_wp - p_pbc_eps)) out = in + real(ceiling(-in),wp)",
+   "wrap.one": "src/mctc/cutoff.f90: if (abs(in - 1.0_wp) < p_pbc_eps) out = in - 1.0_wp",
+   "ws.candidates": "src/multicharge/wignerseitz.f90: call get_lattice_points(mol%periodic, mol%lattice, thr, trans)",
+   "ws.compacted_index": "src/multicharge/wignerseitz.f90: list(iws) = pos",
+   "ws.skip": "src/multicharge/wignerseitz.f90: if (r2 < thr) cycle",
+   "ws.thr": "src/multicharge/wignerseitz.f90: real(wp), parameter :: thr = sqrt(epsilon(0.0_wp))",
+   "ws.tie": "src/multicharge/wignerseitz.f90: if (abs(dist(pos) - r2) > tol) exit",
+   "ws.tol": "src/multicharge/wignerseitz.f90: real(wp), parameter :: tol = 0.01_wp",
+   "zeta.derivative": "src/dftd4/model/utils.f90: dzeta = - a * c * exp( c * ( 1.0_wp - qref/qmod ) ) * zeta(a,c,qref,qmod) * qref / ( qmod**2 )",
+   "zeta.negative": "src/dftd4/model/utils.f90: zeta = exp( a )",
+   "zeta.value": "src/dftd4/model/utils.f90: zeta = exp( a * ( 1.0_wp - exp( c * ( 1.0_wp - qref/qmod ) ) ) )"
+  },
+  "weights": {
+   "fallback": "weight 1 for every reference with |max cnref - cnref| < 1e-12, else 0",
+   "gaussians": "sum_{k=1..ngw} exp(-(k*wf)*(cn - cnref)^2)",
+   "norm_guard": "norm <= sqrt(tiny) -> fallback",
+   "tied_maxima": [],
+   "wf": 6.0
+  },
+  "zeta": {
+   "ga": 3.0,
+   "gc": 2.0,
+   "qmod": "q + zeff",
+   "qref": "clsq + zeff",
+   "value": "exp(ga*(1 - exp(hardness*gc*(1 - qref/qmod)))), exp(ga) if qmod < 0"
+  }
+ },
+ "counts": {
+  "aliases": 319,
+  "bj_methods": 5,
+  "bjatm_methods": 118,
+  "n_frequencies": 23,
+  "n_refs_total": 365,
+  "n_secondary": 17
+ },
+ "derived": {
+  "algorithm": "refalpha = max(ascale*(alphaiw - hcount*((sscale*secaiw)*zeta(ga, hardness[refsys]*gc, zeff[refsys], clsh + zeff[refsys]))), 0), zero for refsys = 0; c6ref = (3/pi) * sequential sum_k (alpha_a[k]*alpha_b[k])*w[k]",
+  "ga": 3.0,
+  "gc": 2.0,
+  "n_c6": 67404,
+  "refalpha_sha256": "bce39fbdacc3063cb32f4250ce1969ea900c91034b7b3d9e57c6713a034e54a5",
+  "refc6_layout": "pairs Zi >= Zj in pair order, blocks row-major nref(Zi) x nref(Zj)",
+  "refc6_sha256": "fb4c19ac1a34eb9fddd5bb801b8386a775bb6d5ca793609f885a2bbde3de2632"
+ },
+ "format": {
+  "element_columns": [
+   "zeff",
+   "hardness",
+   "en",
+   "rcov_d4",
+   "r4r2",
+   "eeq_chi",
+   "eeq_eta",
+   "eeq_kcnchi",
+   "eeq_rad",
+   "eeq_rcov"
+  ],
+  "header_bytes": 512,
+  "layout": "references packed for Z = 1..103 in Z order, each element's references in upstream order; per-reference rows are reference_scalars columns and 23 alphaiw values; secondary rows (index 0 a NaN sentinel) are sscale then 23 secaiw values; element rows indexed by Z with row 0 a NaN sentinel; frequencies then trapezoid weights",
+  "name": "d4_reference.bin",
+  "reference_scalar_columns": [
+   "refcovcn",
+   "refcn",
+   "clsq",
+   "clsh",
+   "hcount",
+   "ascale"
+  ],
+  "section_alignment": 64,
+  "version": 1
+ },
+ "generator": {
+  "script": "tools/generate_d4_data.py",
+  "version": 1
+ },
+ "notices": "THIRD_PARTY_NOTICES.md",
+ "outputs": {
+  "d4_methods.json": {
+   "bytes": 31238,
+   "sha256": "47b5bd38c8a18fd557e513831876697d71981f154b5b1110e4ca1e1140762568"
+  },
+  "d4_reference.bin": {
+   "bytes": 98304,
+   "sha256": "d6834c8806236dcfa90c5e61e3157696e8144565bbce1d68d78ba27e81bc2242"
+  }
+ },
+ "schema": "vanderfast.reference-manifest/1",
+ "sources": [
+  {
+   "commit": "6e1f59c3f39d919a2dbef0601d2576727c8b30e8",
+   "files": {
+    "COPYING": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "COPYING.LESSER": "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118",
+    "src/dftd4/api.f90": "38373014f748ea4074353cd9dbf4ec48e97a991036352ad027c17ae2ca73efb2",
+    "src/dftd4/cutoff.f90": "e9e4b2b6d0cfdb138ff304cf109e59a9549998d2b9008821b4c53a5361c01e1a",
+    "src/dftd4/damping/atm.f90": "7f7e718bfa0892bd48591258b00430e3f7327693275f757fa6e3b27947b4f252",
+    "src/dftd4/damping/rational.f90": "449c052716272c1bb35ad0f41bb23b9a0df019de45c43eb308267c568724d396",
+    "src/dftd4/data/covrad.f90": "66e6888236f46de4c72b075e736d30aa71e8dabafe95f8e5a65eb9c18b98cd7b",
+    "src/dftd4/data/en.f90": "87ccc06465ab37c3ed45d37178977d0f473c2b00035b978c899d126921fad5fe",
+    "src/dftd4/data/hardness.f90": "670f52160cfcbbf6df3c0a85b4586e782b0444432432e25f31d26db2ec9b5556",
+    "src/dftd4/data/r4r2.f90": "57b3c084ac806e37bf95b50207f61e40ff0a7da9483cb98bdcde1e734e2d9fb9",
+    "src/dftd4/data/zeff.f90": "b261a5c7e565f765676a119c31b447f7c0c543cc47c6bdc9b19631ec20c7ad73",
+    "src/dftd4/disp.f90": "e83b1b3cdf1bb2caa56d4ec5b7014b02eb41f362a160dba7e3adbf82dabe2cad",
+    "src/dftd4/model/d4.f90": "dc421a2ccf76227ae028f45ad84efd1683505b803f926dfda24be1b5d223b220",
+    "src/dftd4/model/utils.f90": "e95fa94d7a575b584a5304946f9fd2505c5970b0f1d6e131c5c80e85db06c3ab",
+    "src/dftd4/ncoord.f90": "7afd2bd78bb98ff5c7a892ace6e9114e39d4100d5ef7047a33c14676c3b49125",
+    "src/dftd4/param.f90": "b01b762110944895c0c4e8e6df0897414b8fa6a1ff4a6e52b6cc57370c1be302",
+    "src/dftd4/reference.f90": "b70b2f2a7145739afdc4b6a1c4feab8d588629f3d1b6318f9f0e352c0be67c6c",
+    "src/dftd4/reference.inc": "0cc90b5f5d8b81dcd5f7a87acb44f575ee3d9e75df6e903f7f1a3ecc728e162f",
+    "src/dftd4/utils.f90": "9058fcfae07e8e316cd53d3581f9e115890f1a7aa134a6c3820aa825b03d41c3",
+    "subprojects/mctc-lib.wrap": "f473e346d543e9ff2df3a6f6b81b013042e65788c61e6ae2cc91804872c887c7",
+    "subprojects/multicharge.wrap": "aab0538b83b9dd88e4855152d5b6802447a24ba7e922925a4b401a464e2b1d85"
+   },
+   "license": "LGPL-3.0-or-later",
+   "license_files": [
+    "COPYING",
+    "COPYING.LESSER"
+   ],
+   "name": "dftd4",
+   "repository": "https://github.com/dftd4/dftd4",
+   "tag": "v4.2.0"
+  },
+  {
+   "commit": "6a5d63f9e9e29dcf13cc47cc27f33bf9015681bf",
+   "files": {
+    "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "src/multicharge/charge.f90": "af0b9984ad5a9048bab21e47be66643c5a511ca51d99956e1c9f46b9271be486",
+    "src/multicharge/ewald.f90": "d1c85c6022a533698229dbf3c7fff8871952eda44b6ad589c7273317860b8126",
+    "src/multicharge/model/eeq.f90": "a579f32e1617414baceb0eff139cdec306f6eeda186e07b59d5f572e23aa15e5",
+    "src/multicharge/model/type.F90": "d897aa55a7fa90203b1fdebe17ba5d98ab0ce21076db87fe082242959d811357",
+    "src/multicharge/param.f90": "20b05e48bc0e384381fc84f5a04c8048ce2a86d9c5a7f3498fa6694b661d877f",
+    "src/multicharge/param/eeq2019.f90": "02b8bee49c10b4c31914caf149d9f58164e58d6dc7ae2ab21e9d12f5bc22797a",
+    "src/multicharge/wignerseitz.f90": "d4d6f90858d6e960ecc86ae7d61c7f1779cb8398d32ea9bb70df24a3ee8739b8",
+    "subprojects/mctc-lib.wrap": "f473e346d543e9ff2df3a6f6b81b013042e65788c61e6ae2cc91804872c887c7"
+   },
+   "license": "Apache-2.0",
+   "license_files": [
+    "LICENSE"
+   ],
+   "name": "multicharge",
+   "pinned_by": "dftd4 v4.2.0 subprojects/multicharge.wrap (revision v0.5.0)",
+   "repository": "https://github.com/grimme-lab/multicharge",
+   "tag": "v0.5.0"
+  },
+  {
+   "commit": "e9de066d89f250d1cfb6de3a33f0c27c0e2f855d",
+   "files": {
+    "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "src/mctc/cutoff.f90": "b20aee70bd135710d73021cb98f838f23c6f51d4e4b3beafce14b9be54cd0249",
+    "src/mctc/data/covrad.f90": "fdbd599664a7f113633d96110531d810fdc8e54b6db26d4f584120d9c7cec314",
+    "src/mctc/io/codata2018.f90": "47c4abbc7f9dddb3bba1c89563b45e792304bc56723f1c4b05fc978aa5d3704d",
+    "src/mctc/io/constants.f90": "6ee2b599fc2d338f1a7e07b5b46e984e2612b4cfc58110d1203ecf19ebde2385",
+    "src/mctc/io/convert.f90": "b05d7b4821deb4abe448cf11d53df9b118747294b44f0d774f056bc3b28430b9",
+    "src/mctc/io/math.f90": "8174e5368b1c052a9961825d0a0cb03d58cab944037e22559e731de23c5fc19b",
+    "src/mctc/ncoord/erf.f90": "6bc976e03e290bc01bccfeee3016513e6154ef6267f152d36b7c99a7d706fea9",
+    "src/mctc/ncoord/erf/dftd4.f90": "3bc326ecfbd5a8b43cac9f021a1472df335f7ef041e2f33916906fa71c60a3ab",
+    "src/mctc/ncoord/type.f90": "b8b819f9ea1c0765632fdb4ea9046b0c79f2c1bb13d39555ac3059f498ba1bb5"
+   },
+   "license": "Apache-2.0",
+   "license_files": [
+    "LICENSE"
+   ],
+   "name": "mctc-lib",
+   "pinned_by": "dftd4 v4.2.0 and multicharge v0.5.0 wraps name v0.5.1; the conda-forge builds link mctc-lib 0.5.2",
+   "repository": "https://github.com/grimme-lab/mctc-lib",
+   "tag": "v0.5.2",
+   "upstream_wrap": {
+    "commit": "aa89d4bf5c0076fbf169b59eeb9e30185db0e5a5",
+    "tag": "v0.5.1"
+   }
+  }
+ ],
+ "supported_atomic_numbers": {
+  "max": 103,
+  "min": 1
+ },
+ "tables": {
+  "alphaiw": {
+   "sha256": "a5bd00f3b9a407155cb1600c4912f5c107475395a59ca6d9bfb43ae1477d899c"
+  },
+  "d4_parameters": {
+   "sha256": "47b5bd38c8a18fd557e513831876697d71981f154b5b1110e4ca1e1140762568"
+  },
+  "elements": {
+   "sha256": "291d9194c43f8fd3bc5b5809863e5985c0f652734361bb02a144960a37c717b2"
+  },
+  "frequencies": {
+   "sha256": "b68280ecf989ac14b6fb2b8b0542687050d8bc010042ea69bd6c09a19699b343"
+  },
+  "gaussian_counts": {
+   "sha256": "2f2d73ceb26d6fb7d46d9a5c259e1798f43caf0f8f3009daeb4bfcbbf126095b"
+  },
+  "number_of_references": {
+   "sha256": "57c7deca2b7cb06a816f7c7060fe7d91a7ee085b995b0d6fc92e63a0d13101df"
+  },
+  "reference_scalars": {
+   "sha256": "7c372692fa0a3e7097bf38d85f638114485573218e67bfdac784ffb1ea22218e"
+  },
+  "secondary_system": {
+   "sha256": "86431ffbdf405be1ba93cd945afee649b48a1d2d73bfc93c3b928741e0040077"
+  },
+  "secondary_systems": {
+   "sha256": "a29cbe3c45c4b77d50ab0fd272a40feec8d2a3badc728b959181eecf53139219"
+  }
+ },
+ "units": {
+  "boundary": {
+   "bohr_angstrom": 0.5291772105638411,
+   "hartree_ev": 27.211386024367243,
+   "recipes": {
+    "cutoffs": "x / Bohr",
+    "energy": "e * Hartree",
+    "forces": "-g * Hartree / Bohr",
+    "positions": "x / Bohr",
+    "stress": "virial * Hartree / V -> flat[[0, 4, 8, 5, 2, 1]]"
+   },
+   "source": "ase.units (CODATA 2014), identical to dftd4.ase"
+  },
+  "internal": "bohr, hartree",
+  "table_aatoau": {
+   "hex": "0x1.e3c5175fa440bp+0",
+   "source": "mctc_io_convert: aatoau = 1/(hbar/(me*c*alpha)*1e10), CODATA 2018",
+   "value": 1.8897261246204404
+  }
+ }
+}

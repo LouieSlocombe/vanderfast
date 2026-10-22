@@ -181,6 +181,8 @@ def fortran_statements(source: str) -> list[str]:
     for raw in source.splitlines():
         line = _strip_comment(raw).rstrip()
         stripped = line.lstrip()
+        if pending and not stripped:
+            continue  # comment or blank lines may sit between continuation lines
         if pending and stripped.startswith("&"):
             stripped = stripped[1:]
         if not pending:
@@ -436,6 +438,16 @@ def manifest_outputs(outputs: Mapping[str, bytes]) -> dict[str, dict[str, Any]]:
         name: {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
         for name, data in sorted(outputs.items())
     }
+
+
+def check_licence_copies(reader: SourceReader, pins: Mapping[str, SourcePin]) -> None:
+    """Require ``data/licenses/<source>-<file>`` to equal each pinned licence file."""
+    for pin in pins.values():
+        for relpath in pin.meta["license_files"]:
+            copy = REPO_ROOT / "data" / "licenses" / f"{pin.name}-{relpath}"
+            if not copy.is_file() or copy.read_bytes() != reader.read(pin.name, relpath):
+                msg = f"{copy} must be a verbatim copy of {pin.name}:{relpath}"
+                raise GenerationError(msg)
 
 
 # --------------------------------------------------------------------------
