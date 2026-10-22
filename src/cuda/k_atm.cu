@@ -156,7 +156,7 @@ __global__ void atm_kernel(GeometryView g, ModelView m, GraphView graph,
                                c6iv, dc6iv_i, dc6iv_v);
       contract<M, Derivatives>(wu, nref_u, wv, dwv, nref_v, m.c6ref + (su * S + sv) * kC6Block,
                                c6uv, dc6uv_u, dc6uv_v);
-      if (fabs(c6iu) < DBL_EPSILON || fabs(c6iv) < DBL_EPSILON || fabs(c6uv) < DBL_EPSILON) {
+      if (fabs(c6iu) < m.atm_c6_floor || fabs(c6iv) < m.atm_c6_floor || fabs(c6uv) < m.atm_c6_floor) {
         c6_skipped += 1;
         continue;
       }
@@ -406,7 +406,7 @@ atm_canonical_kernel(GeometryView g, ModelView m, GraphView graph,
         if (screened(r2uv, m.disp3_cutoff2)) {
           const double c6iv = v.c6iv;
           const double c6uv = dot<M>(uu + v.sv * kRefPad, v.w, v.nref);
-          if (fabs(c6iu) < DBL_EPSILON || fabs(c6iv) < DBL_EPSILON || fabs(c6uv) < DBL_EPSILON) {
+          if (fabs(c6iu) < m.atm_c6_floor || fabs(c6iv) < m.atm_c6_floor || fabs(c6uv) < m.atm_c6_floor) {
             c6_skipped += 1;
           } else {
             accepted += 1;

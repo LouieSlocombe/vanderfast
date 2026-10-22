@@ -9,6 +9,7 @@ import numpy.typing as npt
 
 from vanderfast.data import SECTION_REF_CN, read_reference_blob
 from vanderfast.parameters import Cutoffs, D3BJParameters
+from vanderfast.parameters_d4 import D4Cutoffs, D4Parameters
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -33,6 +34,32 @@ def context(
         a2=p.a2,
         s9=p.s9,
         alp=p.alp,
+        cutoff_cn=cutoffs.cn,
+        cutoff_disp2=cutoffs.disp2,
+        cutoff_disp3=cutoffs.disp3,
+        **options,
+    )
+
+
+def d4_context(
+    numbers: npt.ArrayLike,
+    parameters: D4Parameters,
+    cutoffs: D4Cutoffs | None = None,
+    **options: Any,
+) -> Any:
+    cutoffs = cutoffs or D4Cutoffs()
+    p = parameters
+    return native().D4Context(
+        np.asarray(numbers, dtype=np.int32),
+        s6=p.s6,
+        s8=p.s8,
+        a1=p.a1,
+        a2=p.a2,
+        s9=p.s9,
+        alp=p.alp,
+        ga=p.ga,
+        gc=p.gc,
+        wf=p.wf,
         cutoff_cn=cutoffs.cn,
         cutoff_disp2=cutoffs.disp2,
         cutoff_disp3=cutoffs.disp3,

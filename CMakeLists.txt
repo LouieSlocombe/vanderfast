@@ -49,6 +49,17 @@ add_custom_command(
   DEPENDS "${VANDERFAST_REFERENCE_BLOB}" "${PROJECT_SOURCE_DIR}/cmake/EmbedBinary.cmake"
   COMMENT "Embedding the D3 reference tables"
   VERBATIM)
+set(VANDERFAST_D4_REFERENCE_BLOB "${PROJECT_SOURCE_DIR}/src/vanderfast/data/d4_reference.bin")
+file(SHA256 "${VANDERFAST_D4_REFERENCE_BLOB}" VANDERFAST_D4_REFERENCE_SHA256)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${VANDERFAST_D4_REFERENCE_BLOB}")
+add_custom_command(
+  OUTPUT "${VANDERFAST_GENERATED}/embedded_d4_reference.cpp"
+  COMMAND "${CMAKE_COMMAND}" -DINPUT=${VANDERFAST_D4_REFERENCE_BLOB}
+          -DOUTPUT=${VANDERFAST_GENERATED}/embedded_d4_reference.cpp
+          -DSYMBOL=d4_reference_blob -P "${PROJECT_SOURCE_DIR}/cmake/EmbedBinary.cmake"
+  DEPENDS "${VANDERFAST_D4_REFERENCE_BLOB}" "${PROJECT_SOURCE_DIR}/cmake/EmbedBinary.cmake"
+  COMMENT "Embedding the D4 reference tables"
+  VERBATIM)
 
 if(VANDERFAST_ENABLE_CUDA)
   include(cmake/VanderfastCuda.cmake)
@@ -72,10 +83,15 @@ add_library(vanderfast_host STATIC
   src/core/error.cpp
   src/core/reference_data.cpp
   src/core/parameters.cpp
+  src/core/d4_reference_data.cpp
+  src/core/d4_parameters.cpp
+  src/core/d4_model.cpp
+  src/core/ewald.cpp
   src/core/lattice.cpp
   src/core/neighbor_cpu.cpp
   src/core/build_metadata.cpp
-  "${VANDERFAST_GENERATED}/embedded_reference.cpp")
+  "${VANDERFAST_GENERATED}/embedded_reference.cpp"
+  "${VANDERFAST_GENERATED}/embedded_d4_reference.cpp")
 target_include_directories(vanderfast_host
   PUBLIC "${PROJECT_SOURCE_DIR}/include" "${VANDERFAST_GENERATED}"
   PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -95,7 +111,12 @@ if(VANDERFAST_ENABLE_CUDA)
     src/cuda/k_atm.cu
     src/cuda/k_rows.cu
     src/cuda/k_reduce.cu
-    src/cuda/context.cu)
+    src/cuda/pipeline.cu
+    src/cuda/context.cu
+    src/cuda/d4_model.cu
+    src/cuda/k_d4.cu
+    src/cuda/k_eeq.cu
+    src/cuda/d4_context.cu)
   target_include_directories(vanderfast_cuda PRIVATE "${PROJECT_SOURCE_DIR}/src")
   target_link_libraries(vanderfast_cuda PUBLIC vanderfast_host vanderfast_cub CUDA::cudart_static)
   vanderfast_cuda_target(vanderfast_cuda)

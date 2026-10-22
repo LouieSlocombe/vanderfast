@@ -38,3 +38,18 @@ D4_ORACLE_VIRIAL_ABS: Final = 1e-10  # hartree
 def d4_oracle_energy_tolerance(energy: float) -> float:
     """Absolute energy tolerance for D4 oracle-vs-reference comparisons."""
     return D4_ORACLE_ENERGY_ABS + D4_ORACLE_ENERGY_REL * abs(energy)
+
+
+# CUDA D4 against dftd4 4.2.0 with the direct charge solver (atomic units).
+# Calibrated on every fixture: worst observed 1.1e-13 relative energy,
+# 1.9e-14 e, 1.8e-15 hartree/bohr, and 5.2e-15 hartree.
+D4_GPU_ENERGY_ABS: Final = 1e-14  # hartree
+D4_GPU_ENERGY_REL: Final = 1e-12
+D4_GPU_CHARGE_ABS: Final = 1e-12  # e
+D4_GPU_GRADIENT_ABS: Final = 1e-12  # hartree/bohr
+D4_GPU_VIRIAL_ABS: Final = 1e-12  # hartree
+
+
+def d4_gpu_energy_tolerance(energy: float) -> float:
+    """Absolute energy tolerance for CUDA-vs-reference D4 comparisons."""
+    return D4_GPU_ENERGY_ABS + D4_GPU_ENERGY_REL * abs(energy)

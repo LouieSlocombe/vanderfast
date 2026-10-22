@@ -1,3 +1,4 @@
+#include <cfloat>
 #include <cmath>
 
 #include "device_model.cuh"
@@ -100,6 +101,7 @@ ModelView DeviceModel::view(const D3Parameters& parameters) const {
   view.cn_cutoff2 = parameters.cutoffs.cn * parameters.cutoffs.cn;
   view.disp2_cutoff2 = parameters.cutoffs.disp2 * parameters.cutoffs.disp2;
   view.disp3_cutoff2 = parameters.cutoffs.disp3 * parameters.cutoffs.disp3;
+  view.atm_c6_floor = DBL_EPSILON;  // upstream skips triangles with any |C6| < eps
   return view;
 }
 
