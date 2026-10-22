@@ -116,6 +116,8 @@ if(VANDERFAST_ENABLE_CUDA)
     src/cuda/d4_model.cu
     src/cuda/k_d4.cu
     src/cuda/k_eeq.cu
+    src/cuda/k_eeq_solver.cu
+    src/cuda/k_eeq_tiles.cu
     src/cuda/d4_context.cu)
   target_include_directories(vanderfast_cuda PRIVATE "${PROJECT_SOURCE_DIR}/src")
   target_link_libraries(vanderfast_cuda PUBLIC vanderfast_host vanderfast_cub CUDA::cudart_static)

@@ -33,6 +33,11 @@ namespace {
 
 constexpr int kSumColumns = 8;  // e_pair, e_atm, six virial components
 constexpr int kArenaColumns = 15;  // e_pair, e_atm, vir[6], g, grad[3], atm_split, gq, spare
+// MINRES launches are sized to stream about this many matrix bytes, so a
+// single launch stays well below display watchdog limits.
+constexpr double kMinresBytesPerLaunch = 1.4e11;
+
+enum class SolveMethod { SmallLu, Lu, Minres };
 
 Geometry promoted(const Geometry& geometry) {
   Geometry out = geometry;
@@ -87,9 +92,11 @@ struct D4Context::Impl {
       buffer = Buffer(pool.get(), stream.get(), &counters);
     };
     for (DeviceBuffer<double>* buffer :
-         {&cn, &cn_eeq, &dxfac, &rhs, &nu, &kmat, &w, &dw_cn, &dw_q, &w0, &dw0, &u, &du, &duq, &u0, &du0,
+         {&cn, &cn_eeq, &dxfac, &rhs, &nu, &kmat, &qx, &adjoint_rhs, &minres_work, &minres_partials,
+          &w, &dw_cn, &dw_q, &w0, &dw0, &u, &du, &duq, &u0, &du0,
           &row_partials, &atm_partials, &positions_dev, &eeq_positions_dev, &arena, &partials, &sums,
-          &dtrans, &rtrans, &ws_candidates, &self_diag, &self_vir}) {
+          &dtrans, &rtrans, &ws_candidates, &self_diag, &self_vir, &recip_e, &trans_sorted, &sf_c, &sf_s,
+          &reverse_scratch}) {
       make(*buffer);
     }
     make(atm_counters);
@@ -98,6 +105,10 @@ struct D4Context::Impl {
     make(eeq_packed);
     make(pivots);
     make(status);
+    make(minres_state);
+    minres_state.resize(2);
+    minres_block_count = cuda::minres_blocks(static_cast<int>(n), device);
+    host_minres.reserve(2);
     species_dev.upload_async(species.data(), species.size());
     partials.resize(static_cast<std::size_t>(cuda::kReduceBlocks) * kSumColumns);
     sums.resize(kSumColumns);
@@ -159,6 +170,8 @@ struct D4Context::Impl {
     view.ws_candidates = ws_candidates.data();
     view.self_diag = self_diag.data();
     view.self_vir = self_vir.data();
+    view.recip_e = recip_e.data();
+    view.trans_sorted = trans_sorted.data();
     info.alpha = setup.alpha;
     info.n_trans = static_cast<std::int64_t>(setup.n_trans());
     info.n_recip = static_cast<std::int64_t>(setup.n_recip());
@@ -200,6 +213,31 @@ struct D4Context::Impl {
       const double voigt[6] = {ds[0], ds[4], ds[8], ds[5], ds[2], ds[1]};
       std::copy(voigt, voigt + 6, vir.begin() + static_cast<std::ptrdiff_t>(6 * s));
     }
+    // Optimised kernels: reciprocal weights and translations sorted by length.
+    const std::size_t n_recip = setup.n_recip();
+    std::vector<double> weights(n_recip);
+    const double fac = 4 * 3.141592653589793 / setup.volume;
+    for (std::size_t k = 0; k < n_recip; ++k) {
+      const double* gk = setup.rtrans.data() + 3 * k;
+      const double g2 = gk[0] * gk[0] + gk[1] * gk[1] + gk[2] * gk[2];
+      weights[k] = fac * std::exp(-0.25 * g2 / (setup.alpha * setup.alpha)) / g2;
+    }
+    const std::size_t n_trans = setup.n_trans();
+    std::vector<double> lengths(n_trans);
+    std::vector<std::size_t> order(n_trans);
+    for (std::size_t k = 0; k < n_trans; ++k) {
+      const double* tk = setup.dtrans.data() + 3 * k;
+      lengths[k] = std::sqrt(tk[0] * tk[0] + tk[1] * tk[1] + tk[2] * tk[2]);
+      order[k] = k;
+    }
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return lengths[a] < lengths[b]; });
+    std::vector<double> sorted(4 * n_trans);
+    for (std::size_t k = 0; k < n_trans; ++k) {
+      std::copy_n(setup.dtrans.data() + 3 * order[k], 3, sorted.data() + 4 * k);
+      sorted[4 * k + 3] = lengths[order[k]];
+    }
+    recip_e.upload_async(weights.data(), weights.size());
+    trans_sorted.upload_async(sorted.data(), sorted.size());
     dtrans.upload_async(setup.dtrans.data(), setup.dtrans.size());
     rtrans.upload_async(setup.rtrans.data(), setup.rtrans.size());
     if (!setup.ws_candidates.empty()) {
@@ -219,6 +257,51 @@ struct D4Context::Impl {
     std::size_t total = 0;
     VF_CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total));
     return total / 2;
+  }
+
+  SolveMethod choose_method(std::size_t n) const {
+    const bool small = cuda::lu_small_fits(static_cast<int>(n), device);
+    if (eeq.solver == ChargeSolver::Direct) {
+      // The literal kernels keep the multi-kernel LU as an independent check.
+      return small && optimized() ? SolveMethod::SmallLu : SolveMethod::Lu;
+    }
+    if (eeq.solver == ChargeSolver::Auto && small) return SolveMethod::SmallLu;
+    if (minres_block_count == 0) return small ? SolveMethod::SmallLu : SolveMethod::Lu;
+    return SolveMethod::Minres;
+  }
+
+  // MINRES on K x = b into slot ``slot`` of the solver state (0 forward, 1 adjoint).
+  void solve_minres(int slot, const double* b, double* x, bool warm, std::size_t matrix_bytes) {
+    const std::size_t np = numbers.size() + 1;
+    cudaStream_t s = stream.get();
+    minres_work.resize(9 * np);
+    minres_partials.resize(static_cast<std::size_t>(cuda::kMinresSlots * minres_block_count));
+    VF_CUDA_CHECK(cudaMemsetAsync(minres_state.data() + slot, 0, sizeof(cuda::MinresState), s));
+    cuda::MinresArgs args{};
+    args.k = kmat.data();
+    args.b = b;
+    args.x = x;
+    args.work = minres_work.data();
+    args.partials = minres_partials.data();
+    args.state = minres_state.data() + slot;
+    args.np = static_cast<int>(np);
+    args.max_iterations = eeq.max_iterations;
+    args.warm = warm ? 1 : 0;
+    args.tolerance = eeq.tolerance;
+    const double per_launch_estimate = kMinresBytesPerLaunch / static_cast<double>(matrix_bytes);
+    const int per_launch = per_launch_estimate >= eeq.max_iterations
+                               ? eeq.max_iterations
+                               : std::max(16, static_cast<int>(per_launch_estimate));
+    if (per_launch >= eeq.max_iterations) {
+      cuda::launch_minres(args, minres_block_count, eeq.max_iterations, s);
+      return;
+    }
+    for (int done = 0; done < eeq.max_iterations; done += per_launch) {
+      cuda::launch_minres(args, minres_block_count, per_launch, s);
+      cuda::copy_to_host_async(minres_state.data() + slot, host_minres.data() + slot, 1, s);
+      stream.synchronize();
+      if (host_minres.data()[slot].phase == 2) break;
+    }
   }
 
   D4Result run(const Geometry& input, unsigned properties, D4Debug* debug) {
@@ -253,7 +336,8 @@ struct D4Context::Impl {
                " bytes, above the limit of " + std::to_string(matrix_limit()) + " bytes");
     }
     result.eeq.matrix_bytes = matrix_bytes;
-    result.eeq.solver = "direct";
+    const SolveMethod method = choose_method(n);
+    result.eeq.solver = method == SolveMethod::Minres ? "minres" : "direct";
 
     DeviceGuard guard(device);
     cudaStream_t s = stream.get();
@@ -315,14 +399,41 @@ struct D4Context::Impl {
                              row_partials.data(), cn.data(), cn_eeq.data(), rhs.data(), dxfac.data(), s);
     timer.mark("cn");
 
-    // K2: the EEQ charges, q = rhs[0, n) after the solve.
+    // K2: the EEQ charges q (the first n entries of the solution).
     kmat.resize(np * np);
     pivots.resize(np);
-    cuda::launch_eeq_assemble(ge, dv, ev, kmat.data(), s);
+    const bool structure = optimized() && periodic;
+    if (structure) {
+      const std::size_t sf_size = n * static_cast<std::size_t>(ev.n_recip);
+      sf_c.resize(sf_size);
+      sf_s.resize(sf_size);
+      cuda::launch_structure_factors(ge, ev, sf_c.data(), sf_s.data(), s);
+    }
+    if (optimized()) {
+      cuda::launch_eeq_assemble_tiles(ge, dv, ev, structure ? sf_c.data() : nullptr,
+                                      structure ? sf_s.data() : nullptr, kmat.data(), s);
+    } else {
+      cuda::launch_eeq_assemble(ge, dv, ev, kmat.data(), s);
+    }
     timer.mark("eeq_setup");
-    cuda::launch_lu_factor(kmat.data(), static_cast<int>(n), pivots.data(), status.data(), s);
-    cuda::launch_lu_solve(kmat.data(), static_cast<int>(n), pivots.data(), rhs.data(), s);
     const double* q = rhs.data();
+    bool warm_adjoint = false;
+    if (method == SolveMethod::Minres) {
+      qx.resize(np);
+      const bool warm = eeq.warm_start && warm_charges;
+      warm_adjoint = eeq.warm_start && warm_nu;
+      result.eeq.warm_started = warm;
+      warm_charges = false;
+      warm_nu = false;
+      solve_minres(0, rhs.data(), qx.data(), warm, matrix_bytes);
+      q = qx.data();
+    } else if (method == SolveMethod::SmallLu) {
+      cuda::launch_lu_small_factor_solve(kmat.data(), static_cast<int>(n), pivots.data(), rhs.data(),
+                                         status.data(), s);
+    } else {
+      cuda::launch_lu_factor(kmat.data(), static_cast<int>(n), pivots.data(), status.data(), s);
+      cuda::launch_lu_solve(kmat.data(), static_cast<int>(n), pivots.data(), rhs.data(), s);
+    }
     timer.mark("eeq_solve");
 
     // K3: weights and species-contracted weights (charged and neutral).
@@ -363,9 +474,21 @@ struct D4Context::Impl {
     // K5: adjoint of the charge equations, K [nu; lambda] = [dE/dq; 0].
     if (derivatives) {
       nu.resize(np);
-      nu.zero_async();
-      VF_CUDA_CHECK(cudaMemcpyAsync(nu.data(), accum.gq, n * sizeof(double), cudaMemcpyDeviceToDevice, s));
-      cuda::launch_lu_solve(kmat.data(), static_cast<int>(n), pivots.data(), nu.data(), s);
+      if (method == SolveMethod::Minres) {
+        adjoint_rhs.resize(np);
+        adjoint_rhs.zero_async();
+        VF_CUDA_CHECK(
+            cudaMemcpyAsync(adjoint_rhs.data(), accum.gq, n * sizeof(double), cudaMemcpyDeviceToDevice, s));
+        solve_minres(1, adjoint_rhs.data(), nu.data(), warm_adjoint, matrix_bytes);
+      } else {
+        nu.zero_async();
+        VF_CUDA_CHECK(cudaMemcpyAsync(nu.data(), accum.gq, n * sizeof(double), cudaMemcpyDeviceToDevice, s));
+        if (method == SolveMethod::SmallLu) {
+          cuda::launch_lu_small_solve(kmat.data(), static_cast<int>(n), pivots.data(), nu.data(), s);
+        } else {
+          cuda::launch_lu_solve(kmat.data(), static_cast<int>(n), pivots.data(), nu.data(), s);
+        }
+      }
     }
     timer.mark("eeq_adjoint");
 
@@ -376,7 +499,14 @@ struct D4Context::Impl {
 
     // K7: charge and CN reverse passes.
     if (derivatives) {
-      cuda::launch_eeq_reverse(ge, dv, ev, q, nu.data(), accum, s);
+      if (optimized()) {
+        reverse_scratch.resize(cuda::eeq_reverse_tiles_scratch(static_cast<int>(n), ev.n_recip));
+        cuda::launch_eeq_reverse_tiles(ge, dv, ev, structure ? sf_c.data() : nullptr,
+                                       structure ? sf_s.data() : nullptr, q, nu.data(), accum,
+                                       reverse_scratch.data(), s);
+      } else {
+        cuda::launch_eeq_reverse(ge, dv, ev, q, nu.data(), accum, s);
+      }
       timer.mark("eeq_reverse");
       cuda::launch_d4_cn_reverse_items(g, mv, dv, gv, graph.cn_item_prefix(), graph.cn_items(), accum,
                                        nu.data(), dxfac.data(), row_partials.data(), s);
@@ -387,6 +517,7 @@ struct D4Context::Impl {
     cuda::launch_column_sums(accum.e_pair, kSumColumns, n, n, partials.data(), sums.data(), s);
     sums.download_async(host_sums.data(), kSumColumns);
     status.download_async(host_status.data(), 1);
+    if (method == SolveMethod::Minres) minres_state.download_async(host_minres.data(), derivatives ? 2 : 1);
     host_charges.reserve(n);
     cuda::copy_to_host_async(q, host_charges.data(), n, s);
     if (want_gradient) {
@@ -404,6 +535,7 @@ struct D4Context::Impl {
     if (host_status.data()[0] != 0) {
       fail(ErrorCode::ChargeSystemSingular, "the EEQ charge equations are singular");
     }
+    if (method == SolveMethod::Minres) check_minres(result.eeq, derivatives);
 
     result.charges.assign(host_charges.data(), host_charges.data() + n);
     result.energy_pair = host_sums.data()[0];
@@ -418,6 +550,34 @@ struct D4Context::Impl {
       for (std::size_t i = 0; i < n; ++i) result.atom_energies[i] = host_atoms.data()[i] + host_atoms.data()[n + i];
     }
     return result;
+  }
+
+  // Record the MINRES diagnostics and raise on singular or unconverged solves.
+  void check_minres(EeqInfo& info, bool adjoint) {
+    const cuda::MinresState& forward = host_minres.data()[0];
+    info.forward_iterations = forward.itn;
+    info.restarts = forward.restarts;
+    info.backward_error = forward.eta;
+    const int solves = adjoint ? 2 : 1;
+    for (int slot = 0; slot < solves; ++slot) {
+      const cuda::MinresState& st = host_minres.data()[slot];
+      const char* which = slot == 0 ? "charge" : "adjoint charge";
+      if (st.status == 1) {
+        fail(ErrorCode::ChargeSystemSingular,
+             std::string("the EEQ ") + which + " equations are singular or ill-conditioned");
+      }
+      if (st.status == 2 || st.phase != 2) {
+        fail(ErrorCode::ChargeSolverNotConverged,
+             std::string("MINRES did not converge for the EEQ ") + which + " equations after " +
+                 std::to_string(st.itn) + " iterations (backward error " + std::to_string(st.eta) + ")");
+      }
+    }
+    if (adjoint) {
+      info.adjoint_iterations = host_minres.data()[1].itn;
+      info.restarts += host_minres.data()[1].restarts;
+    }
+    warm_charges = true;
+    warm_nu = adjoint;
   }
 
   void run_atm(const cuda::GeometryView& g, const cuda::ModelView& mv, const cuda::GraphView& gv,
@@ -528,11 +688,18 @@ struct D4Context::Impl {
   DeviceBuffer<double> row_partials, atm_partials;
   DeviceBuffer<double> positions_dev, eeq_positions_dev;
   DeviceBuffer<double> arena, partials, sums;
-  DeviceBuffer<double> dtrans, rtrans, ws_candidates, self_diag, self_vir;
+  DeviceBuffer<double> dtrans, rtrans, ws_candidates, self_diag, self_vir, recip_e, trans_sorted;
+  DeviceBuffer<double> sf_c, sf_s, reverse_scratch;
   DeviceBuffer<unsigned long long> atm_counters;
   DeviceBuffer<int> species_dev;
   DeviceBuffer<double4_32a> packed, eeq_packed;
   DeviceBuffer<int> pivots, status;
+  DeviceBuffer<double> qx, adjoint_rhs, minres_work, minres_partials;
+  DeviceBuffer<cuda::MinresState> minres_state;
+  PinnedBuffer<cuda::MinresState> host_minres;
+  int minres_block_count = 0;
+  bool warm_charges = false;  // qx holds a converged solution for a warm start
+  bool warm_nu = false;       // nu likewise
   PinnedBuffer<unsigned long long> host_counters;
   PinnedBuffer<double> staging, eeq_staging, host_sums, host_gradient, host_atoms, host_charges;
   PinnedBuffer<int> host_status;

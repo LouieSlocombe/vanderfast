@@ -42,6 +42,10 @@ struct EwaldView {
   const double* ws_candidates;  // [27 * 3] upstream mode
   const double* self_diag;      // [S] periodic diagonal (self images, Gaussian self, Ewald self)
   const double* self_vir;       // [S * 6] strain derivative of the self images
+  // Optimised kernels: reciprocal weights 4 pi / V exp(-G^2 / 4 alpha^2) / G^2
+  // and the translations sorted by length as (x, y, z, |T|).
+  const double* recip_e;        // [G]
+  const double* trans_sorted;   // [T * 4]
 };
 
 // K1 (D4): fused D4 and EEQ coordination numbers over the CN view; the
@@ -77,6 +81,73 @@ void launch_lu_factor(double* k, int n, int* pivots, int* status, cudaStream_t s
 
 // EEQ: solve K x = b in place with the factors of launch_lu_factor.
 void launch_lu_solve(const double* lu, int n, const int* pivots, double* b, cudaStream_t stream);
+
+// EEQ small systems: LU with partial pivoting of K in shared memory, factors
+// written back to ``k`` (for later solves) and ``b`` solved in place. One block;
+// needs (n + 1)^2 doubles of shared memory (lu_small_fits).
+bool lu_small_fits(int n, int device);
+void launch_lu_small_factor_solve(double* k, int n, int* pivots, double* b, int* status,
+                                  cudaStream_t stream);
+// Solve with the factors of launch_lu_small_factor_solve (one warp).
+void launch_lu_small_solve(const double* lu, int n, const int* pivots, double* b, cudaStream_t stream);
+
+// Preconditioned MINRES (Paige-Saunders) on the bordered system K x = b with
+// the Jacobi preconditioner diag(|A_ii|, sum_i 1/|A_ii|). Every block of one
+// cooperative launch evaluates the scalar recurrences from the same
+// fixed-order partial sums, so results are bitwise reproducible. Converged
+// inner iterations are checked against the true residual, eta = |b - Kx|_inf /
+// (|K|_inf |x|_inf + |b|_inf), and restarted from x until eta <= 2^-48.
+constexpr int kMinresSlots = 9;  // per-block partial sums held at once
+
+struct MinresState {
+  double beta, oldb, dbar, epsln, phibar, cs, sn, beta1, gmax, gmin;
+  double knorm, bnorm, dmax, mborder, eta;
+  double bscale;  // |b| in the M^-1 norm: the inner tolerance is relative to it
+  int itn;       // iterations over all restarts
+  int inner;     // iterations since the last (re)start
+  int restarts;
+  int phase;     // 0 start, 1 iterating, 2 finished
+  int status;    // 0 converged, 1 singular, 2 not converged
+  int pad;
+};
+
+struct MinresArgs {
+  const double* k;   // [(n + 1)^2]
+  const double* b;   // [n + 1]
+  double* x;         // [n + 1] solution; the initial guess when ``warm``
+  double* work;      // [9 * (n + 1)] r1, r2, z, v, y, w, w2, m, r
+  double* partials;  // [kMinresSlots * blocks]
+  MinresState* state;
+  int np;
+  int max_iterations;
+  int warm;
+  double tolerance;  // accepted eta
+};
+
+// Blocks of the cooperative MINRES launch on the current device.
+int minres_blocks(int n, int device);
+// Run up to ``iterations`` further iterations (state->phase must be 0 or 1).
+void launch_minres(const MinresArgs& args, int blocks, int iterations, cudaStream_t stream);
+
+// EEQ (optimised): cos and sin of G . r_i for every reciprocal vector, [G * n] each.
+void launch_structure_factors(const GeometryView& g, const EwaldView& e, double* c, double* s,
+                              cudaStream_t stream);
+
+// EEQ (optimised): K from 32 x 32 lower-triangle tiles (screened, length-sorted
+// real-space sums and the reciprocal part from structure factors), plus the
+// diagonal and the border.
+void launch_eeq_assemble_tiles(const GeometryView& g, const D4View& d, const EwaldView& e,
+                               const double* sf_c, const double* sf_s, double* k, cudaStream_t stream);
+
+// Partial buffers of the tiled reverse pass (doubles).
+std::size_t eeq_reverse_tiles_scratch(int n, int n_recip);
+
+// EEQ reverse (optimised): each pair once per lower-triangle tile with
+// fixed-order per-tile partials, the reciprocal part through structure sums,
+// and the self images; deterministic.
+void launch_eeq_reverse_tiles(const GeometryView& g, const D4View& d, const EwaldView& e,
+                              const double* sf_c, const double* sf_s, const double* q, const double* nu,
+                              const AccumView& acc, double* scratch, cudaStream_t stream);
 
 // EEQ reverse: gradient and virial of -nu^T A q (owner rows, deterministic).
 void launch_eeq_reverse(const GeometryView& g, const D4View& d, const EwaldView& e,

@@ -54,11 +54,14 @@ def test_host_precompute_matches_the_oracle_bitwise(native: Any, ga: float, gc: 
     alpha = _oracle_d4.reference_alpha(tables, ga, gc)
     elements = (1, 3, 6, 8, 26, 38, 55, 56, 79, 92, 95, 98, 103)
     for z in elements:
-        np.testing.assert_array_equal(native.d4_reference_alpha(z, ga, gc), alpha[tables.references(z)])
+        np.testing.assert_array_equal(
+            native.d4_reference_alpha(z, ga, gc), alpha[tables.references(z)]
+        )
     for zi in elements:
         for zj in elements:
             np.testing.assert_array_equal(
-                native.d4_reference_c6(zi, zj, ga, gc), _oracle_d4.reference_c6(tables, alpha, zi, zj)
+                native.d4_reference_c6(zi, zj, ga, gc),
+                _oracle_d4.reference_c6(tables, alpha, zi, zj),
             )
 
 

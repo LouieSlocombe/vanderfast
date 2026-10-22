@@ -41,7 +41,9 @@ def test_cases_match_dftd4(case: D4FixtureCase) -> None:
     np.testing.assert_allclose(result["charges"], case.charges, rtol=0, atol=D4_GPU_CHARGE_ABS)
     if case.gradient is not None:
         assert case.virial is not None
-        np.testing.assert_allclose(result["gradient"], case.gradient, rtol=0, atol=D4_GPU_GRADIENT_ABS)
+        np.testing.assert_allclose(
+            result["gradient"], case.gradient, rtol=0, atol=D4_GPU_GRADIENT_ABS
+        )
         np.testing.assert_allclose(result["virial"], case.virial, rtol=0, atol=D4_GPU_VIRIAL_ABS)
     assert result["info"]["eeq_solver"] == "direct"
     assert result["info"]["ewald_mode"] == ("upstream" if case.periodic else "none")
@@ -82,11 +84,15 @@ def test_intermediates_match_the_oracle(
     np.testing.assert_allclose(debug["cn_eeq"], oracle.cn_eeq, rtol=1e-13, atol=1e-15)
     np.testing.assert_allclose(debug["charges"], oracle.charges, rtol=0, atol=1e-13)
     np.testing.assert_allclose(debug["weights"][:, :nref], oracle.weights, rtol=1e-12, atol=1e-15)
-    np.testing.assert_allclose(debug["weights_q0"][:, :nref], oracle.weights_q0, rtol=1e-12, atol=1e-15)
+    np.testing.assert_allclose(
+        debug["weights_q0"][:, :nref], oracle.weights_q0, rtol=1e-12, atol=1e-15
+    )
     np.testing.assert_allclose(
         debug["dweights_dcn"][:, :nref], oracle.dweights_dcn, rtol=1e-11, atol=1e-14
     )
-    np.testing.assert_allclose(debug["dweights_dq"][:, :nref], oracle.dweights_dq, rtol=1e-11, atol=1e-14)
+    np.testing.assert_allclose(
+        debug["dweights_dq"][:, :nref], oracle.dweights_dq, rtol=1e-11, atol=1e-14
+    )
     assert oracle.dedcn is not None
     assert oracle.dedq is not None
     np.testing.assert_allclose(debug["dEdcn"], oracle.dedcn, rtol=1e-11, atol=1e-16)
@@ -124,7 +130,9 @@ def test_gradient_matches_finite_differences_of_gpu_energies(name: str) -> None:
     def energy(x: np.ndarray) -> float:
         return float(nh.run(ctx, x, gradient=False, virial=False)["energy"])
 
-    ok, errors = agrees_over_sweep(analytic, lambda h: position_gradient(energy, positions, h), 1e-10)
+    ok, errors = agrees_over_sweep(
+        analytic, lambda h: position_gradient(energy, positions, h), 1e-10
+    )
     assert ok, errors
 
 

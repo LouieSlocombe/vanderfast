@@ -25,7 +25,9 @@ FULL = (True, True, True)
 EWALD: list[EwaldMode] = ["upstream", "converged"]
 
 
-def _rattled(build: Callable[[], Atoms], seed: int = 3) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _rattled(
+    build: Callable[[], Atoms], seed: int = 3
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     atoms = build()
     rng = np.random.default_rng(seed)
     positions = atoms.positions * INV_BOHR + rng.normal(scale=0.05, size=atoms.positions.shape)
@@ -38,7 +40,14 @@ def test_gpu_matches_the_oracle(name: str, ewald: EwaldMode) -> None:
     numbers, positions, cell = _rattled(structures.IONIC[name])
     result = nh.run(nh.d4_context(numbers, PBE, SHORT, ewald=ewald), positions, cell, FULL)
     oracle = _oracle_d4.evaluate(
-        numbers, positions, parameters=PBE, cell=cell, pbc=FULL, cutoffs=SHORT, ewald=ewald, gradient=True
+        numbers,
+        positions,
+        parameters=PBE,
+        cell=cell,
+        pbc=FULL,
+        cutoffs=SHORT,
+        ewald=ewald,
+        gradient=True,
     )
     assert oracle.gradient is not None
     assert oracle.strain_derivative is not None
@@ -49,7 +58,10 @@ def test_gpu_matches_the_oracle(name: str, ewald: EwaldMode) -> None:
     assert result["info"]["ewald_alpha"] == pytest.approx(oracle.ewald_alpha, rel=1e-15)
     assert result["info"]["ewald_mode"] == ewald
     if ewald == "upstream":
-        assert (result["info"]["ewald_translations"], result["info"]["ewald_reciprocal"]) == (125, 124)
+        assert (result["info"]["ewald_translations"], result["info"]["ewald_reciprocal"]) == (
+            125,
+            124,
+        )
 
 
 @pytest.mark.parametrize("ewald", EWALD)
