@@ -83,6 +83,8 @@ data-check:
 
 fixtures:
 	OMP_NUM_THREADS=1 $(PYTHON) tools/generate_fixtures.py
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 $(PYTHON) tools/generate_d4_fixtures.py
 
 fixtures-check:
 	OMP_NUM_THREADS=1 $(PYTHON) tools/generate_fixtures.py --check
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 $(PYTHON) tools/generate_d4_fixtures.py --check

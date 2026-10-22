@@ -23,6 +23,7 @@ REQUIRED = [
     "src/vanderfast/data/d4_methods.json",
     "src/vanderfast/data/d4_manifest.json",
     "tests/fixtures/dftd3-1.6.0/molecules.jsonl",
+    "tests/fixtures/dftd4-4.2.0/molecules.jsonl",
 ]
 FORBIDDEN_PREFIXES = ["build/", "reports/", ".github/", "benchmarks/results/"]
 

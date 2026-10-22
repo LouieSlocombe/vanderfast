@@ -117,6 +117,9 @@ jobs:
       - name: Regenerate the dftd3 fixtures
         run: python tools/generate_fixtures.py --check
 
+      - name: Regenerate the dftd4 fixtures
+        run: python tools/generate_d4_fixtures.py --check
+
   cuda-build:
     name: CUDA build (no GPU)
     runs-on: ubuntu-latest

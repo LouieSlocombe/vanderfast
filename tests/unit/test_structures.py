@@ -12,6 +12,12 @@ BUILDERS: dict[str, Callable[[], Atoms]] = {
     **structures.MOLECULES,
     **structures.PERIODIC,
     **structures.PARTIAL,
+    **structures.IONIC,
+    **{name: build for name, (build, _) in structures.IONS.items()},
+    "uranyl": structures.uranyl,
+    "americium_trichloride": structures.americium_trichloride,
+    "hydrogen_cluster_indefinite": structures.hydrogen_cluster_indefinite,
+    "hydrogen_solid": structures.hydrogen_solid,
     "dimer": lambda: structures.dimer(1, 8, 1.0),
     "equilateral": lambda: structures.equilateral_trimer(18, 3.5),
     "linear": lambda: structures.linear_trimer(18, 3.8),
@@ -50,3 +56,16 @@ def test_geometric_builders_have_requested_shapes() -> None:
         ).get_global_number_of_atoms()
         == 16
     )
+
+
+def test_ion_builders_have_the_documented_composition() -> None:
+    formulas = {
+        name: build().get_chemical_formula() for name, (build, _) in structures.IONS.items()
+    }
+    assert formulas["ammonium"] == "H4N"
+    assert formulas["acetate"] == "C2H3O2"
+    assert formulas["sulfate"] == "O4S"
+    assert formulas["hexaaqua_iron"] == "H12FeO6"
+    assert structures.IONS["sulfate"][1] == -2.0
+    iron = structures.hexaaqua_iron()
+    np.testing.assert_allclose(np.linalg.norm(iron.positions[iron.numbers == 8], axis=1), 2.0)

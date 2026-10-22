@@ -26,3 +26,15 @@ def oracle_energy_tolerance(energy: float) -> float:
 def target_energy_tolerance(n_atoms: int) -> float:
     """Absolute CUDA-vs-reference energy target in eV."""
     return TARGET_ENERGY_ABS_EV + n_atoms * TARGET_ENERGY_PER_ATOM_EV
+
+
+D4_ORACLE_ENERGY_ABS: Final = 1e-11  # hartree
+D4_ORACLE_ENERGY_REL: Final = 1e-12
+D4_ORACLE_CHARGE_ABS: Final = 1e-11  # e
+D4_ORACLE_GRADIENT_ABS: Final = 1e-11  # hartree/bohr
+D4_ORACLE_VIRIAL_ABS: Final = 1e-10  # hartree
+
+
+def d4_oracle_energy_tolerance(energy: float) -> float:
+    """Absolute energy tolerance for D4 oracle-vs-reference comparisons."""
+    return D4_ORACLE_ENERGY_ABS + D4_ORACLE_ENERGY_REL * abs(energy)
