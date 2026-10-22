@@ -77,6 +77,10 @@ class D4Context {
   ContextStats stats() const;
 
   void testing_set_allocation_limit(std::size_t bytes);
+  // Testing hooks: the atom count from which MINRES uses packed storage, and
+  // the EEQ memory limit (0 restores the defaults).
+  void testing_set_packed_min_atoms(std::size_t atoms);
+  void testing_set_matrix_limit(std::size_t bytes);
 
  private:
   struct Impl;

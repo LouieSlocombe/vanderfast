@@ -10,7 +10,7 @@ from support import native_helpers as nh
 from support.fixtures_d4 import D4FixtureCase, load_family
 from support.tolerances import D4_GPU_CHARGE_ABS, d4_gpu_energy_tolerance
 
-from vanderfast.errors import ChargeSolverError
+from vanderfast.errors import ChargeSolverError, DeviceOutOfMemoryError
 from vanderfast.parameters_d4 import D4Cutoffs, resolve_d4_parameters
 from vanderfast.testing import structures
 from vanderfast.units import INV_BOHR
@@ -43,8 +43,12 @@ def _system(name: str) -> tuple[Atoms, float, bool]:
         atoms, charge, periodic = _cluster(structures.water_dimer, 8), 0.0, False
     elif name == "acetate_cluster_189":
         atoms, charge, periodic = _cluster(structures.acetate, 27), -27.0, False
+    elif name == "acetate_cluster_819":
+        atoms, charge, periodic = _cluster(structures.acetate, 117), -117.0, False
     elif name == "mgo_216":
         atoms, charge, periodic = structures.magnesia_conventional().repeat((3, 3, 3)), 0.0, True
+    elif name == "mgo_1000":
+        atoms, charge, periodic = structures.magnesia_conventional().repeat((5, 5, 5)), 0.0, True
     else:
         atoms, charge, periodic = structures.fluorite().repeat((4, 4, 4)), 0.0, True
     atoms.rattle(stdev=0.05, seed=2)
@@ -106,7 +110,77 @@ def test_solvers_agree_beyond_the_shared_memory_limit() -> None:
         )
 
 
-@pytest.mark.parametrize("name", ["acetate_cluster_189", "mgo_216"])
+@pytest.mark.parametrize("name", ["acetate_cluster_819", "mgo_1000"])
+def test_packed_minres_matches_the_literal_path(name: str) -> None:
+    """Large systems store A as packed lower-triangle 32 x 32 tiles."""
+    atoms, charge, periodic = _system(name)
+    literal = _evaluate(atoms, charge, periodic, PBE_PAIR, kernels="literal", solver="direct")
+    packed = _evaluate(atoms, charge, periodic, PBE_PAIR)
+    rows = (len(atoms) + 31) // 32
+    assert packed["info"]["eeq_solver"] == "minres"
+    assert packed["info"]["eeq_matrix_bytes"] == rows * (rows + 1) // 2 * 32 * 32 * 8
+    assert literal["info"]["eeq_matrix_bytes"] == (len(atoms) + 1) ** 2 * 8
+    assert packed["energy"] == pytest.approx(literal["energy"], rel=1e-13)
+    np.testing.assert_allclose(packed["charges"], literal["charges"], rtol=0, atol=2e-12)
+    np.testing.assert_allclose(packed["gradient"], literal["gradient"], rtol=0, atol=1e-14)
+    np.testing.assert_allclose(packed["virial"], literal["virial"], rtol=0, atol=1e-13)
+
+
+def _context(atoms: Atoms, charge: float, **options: Any) -> Any:
+    return nh.d4_context(atoms.numbers, PBE, SHORT, charge=charge, **options)
+
+
+def _run(ctx: Any, atoms: Atoms, periodic: bool) -> dict[str, Any]:
+    cell = atoms.cell[:] * INV_BOHR if periodic else None
+    return nh.run(ctx, atoms.positions * INV_BOHR, cell, (periodic,) * 3)
+
+
+@pytest.mark.parametrize(
+    ("name", "ewald"), [("acetate_cluster_189", "upstream"), ("mgo_216", "converged")]
+)
+def test_packed_storage_matches_dense_storage(name: str, ewald: str) -> None:
+    atoms, charge, periodic = _system(name)
+    dense = _run(_context(atoms, charge, ewald=ewald), atoms, periodic)
+    ctx = _context(atoms, charge, ewald=ewald)
+    ctx._testing_set_packed_min_atoms(1)  # noqa: SLF001
+    packed = _run(ctx, atoms, periodic)
+    rows = (len(atoms) + 31) // 32
+    assert packed["info"]["eeq_matrix_bytes"] == rows * (rows + 1) // 2 * 32 * 32 * 8
+    assert dense["info"]["eeq_matrix_bytes"] == (len(atoms) + 1) ** 2 * 8
+    assert packed["energy"] == pytest.approx(dense["energy"], rel=1e-13)
+    np.testing.assert_allclose(packed["charges"], dense["charges"], rtol=0, atol=1e-12)
+    np.testing.assert_allclose(packed["gradient"], dense["gradient"], rtol=0, atol=1e-14)
+    np.testing.assert_allclose(packed["virial"], dense["virial"], rtol=0, atol=1e-13)
+
+
+@pytest.mark.parametrize(
+    ("name", "ewald"), [("mgo_216", "upstream"), ("fluorite_192", "converged")]
+)
+def test_recomputed_lattice_derivatives_match_stored_ones(name: str, ewald: str) -> None:
+    """Without room for the pair derivatives the reverse pass repeats the lattice sums."""
+    atoms, charge, periodic = _system(name)
+    stored = _run(_context(atoms, charge, ewald=ewald), atoms, periodic)
+    ctx = _context(atoms, charge, ewald=ewald)
+    ctx._testing_set_matrix_limit((len(atoms) + 1) ** 2 * 8)  # noqa: SLF001
+    recomputed = _run(ctx, atoms, periodic)
+    # The two kernel variants may contract the lattice sums into FMAs differently.
+    assert recomputed["energy"] == pytest.approx(stored["energy"], rel=1e-14)
+    np.testing.assert_allclose(recomputed["charges"], stored["charges"], rtol=0, atol=1e-13)
+    np.testing.assert_allclose(recomputed["gradient"], stored["gradient"], rtol=0, atol=1e-15)
+    np.testing.assert_allclose(recomputed["virial"], stored["virial"], rtol=0, atol=1e-14)
+
+
+def test_matrix_limit_raises_and_leaves_the_context_usable() -> None:
+    atoms, charge, periodic = _system("acetate_cluster_189")
+    ctx = _context(atoms, charge)
+    ctx._testing_set_matrix_limit(1024)  # noqa: SLF001
+    with pytest.raises(DeviceOutOfMemoryError, match="EEQ matrix of 189 atoms"):
+        _run(ctx, atoms, periodic)
+    ctx._testing_set_matrix_limit(0)  # noqa: SLF001
+    assert np.isfinite(_run(ctx, atoms, periodic)["energy"])
+
+
+@pytest.mark.parametrize("name", ["acetate_cluster_189", "mgo_216", "acetate_cluster_819"])
 def test_pair_only_results_are_bitwise_reproducible(name: str) -> None:
     """MINRES and the tiled reverse use fixed-order reductions (ATM still uses atomics)."""
     atoms, charge, periodic = _system(name)

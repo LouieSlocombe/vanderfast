@@ -66,7 +66,7 @@ GPU_VENV ?= build/gpu-venv
 gpu-verify:
 	rm -rf $(GPU_VENV)
 	$(PYTHON) -m venv $(GPU_VENV)
-	$(GPU_VENV)/bin/python -m pip install --quiet dist/*.whl "dftd3==1.6.0" pytest pytest-cov
+	$(GPU_VENV)/bin/python -m pip install --quiet dist/*.whl "dftd3==1.6.0" "dftd4==4.2.0" pytest pytest-cov
 	cd build && env -i HOME="$$HOME" PATH=/usr/bin:/bin $(CURDIR)/$(GPU_VENV)/bin/python -m pytest \
 	  $(CURDIR)/tests --rootdir $(CURDIR) --require-native --require-cuda --require-reference \
 	  --run-slow --no-cov -p no:cacheprovider --junitxml $(CURDIR)/build/gpu-junit.xml

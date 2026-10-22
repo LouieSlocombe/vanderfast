@@ -86,6 +86,23 @@ def test_report_renders_every_table(tmp_path: Path, capsys: pytest.CaptureFixtur
     assert "| w/N=3/atm | n/a | n/a | n/a | 0.5 | 1 | n/a | n/a | 1.5 | 2 |" in out
     assert "| w/N=3/atm | 100 | 50 | 5 | 1.0 |" in out
     assert "- w/N=9/pair: error: MemoryError" in out
+    d4 = {
+        "cases": [
+            {
+                "case_id": "w/N=3/pair/d4",
+                "status": "ok",
+                "modes": {"warm_native": {"wall_ms": wall, "gpu_stage_ms": {"eeq_solve": 0.25}}},
+            }
+        ]
+    }
+    d4_path = tmp_path / "d4.json"
+    d4_path.write_text(json.dumps(d4))
+    assert report.main([str(d4_path)]) == 0
+    out = capsys.readouterr().out
+    assert "### D4 GPU stages" in out
+    assert "| dftd4 ms |" in out
+    assert "### GPU stages" not in out
+    assert "| w/N=3/pair/d4 | n/a | n/a | n/a | n/a | 0.25 |" in out
     other = tmp_path / "reference.json"
     errors = {"reference_wall_ms": 40.0, "vs": "dftd3 (OMP_NUM_THREADS=28)"}
     other.write_text(json.dumps({"cases": [{"case_id": "w/N=3/atm", "errors": errors}]}))

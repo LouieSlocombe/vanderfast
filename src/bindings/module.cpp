@@ -568,6 +568,14 @@ PYBIND11_MODULE(_native, m) {
           "_testing_set_allocation_limit",
           [](D4Context& context, std::size_t bytes) { context.testing_set_allocation_limit(bytes); },
           py::arg("bytes"))
+      .def(
+          "_testing_set_packed_min_atoms",
+          [](D4Context& context, std::size_t atoms) { context.testing_set_packed_min_atoms(atoms); },
+          py::arg("atoms"))
+      .def(
+          "_testing_set_matrix_limit",
+          [](D4Context& context, std::size_t bytes) { context.testing_set_matrix_limit(bytes); },
+          py::arg("bytes"))
       .def_property_readonly("n_atoms", &D4Context::n_atoms)
       .def("stats", [](const D4Context& context) {
         const ContextStats s = context.stats();

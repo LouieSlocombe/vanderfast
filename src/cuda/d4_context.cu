@@ -36,6 +36,9 @@ constexpr int kArenaColumns = 15;  // e_pair, e_atm, vir[6], g, grad[3], atm_spl
 // MINRES launches are sized to stream about this many matrix bytes, so a
 // single launch stays well below display watchdog limits.
 constexpr double kMinresBytesPerLaunch = 1.4e11;
+// From this size MINRES uses packed symmetric storage: half the memory
+// traffic per product outweighs its extra grid sync per iteration.
+constexpr std::size_t kPackedMinAtoms = 768;
 
 enum class SolveMethod { SmallLu, Lu, Minres };
 
@@ -92,11 +95,11 @@ struct D4Context::Impl {
       buffer = Buffer(pool.get(), stream.get(), &counters);
     };
     for (DeviceBuffer<double>* buffer :
-         {&cn, &cn_eeq, &dxfac, &rhs, &nu, &kmat, &qx, &adjoint_rhs, &minres_work, &minres_partials,
+         {&cn, &cn_eeq, &dxfac, &rhs, &nu, &kmat, &qx, &adjoint_rhs, &minres_work, &minres_partials, &tile_partials,
           &w, &dw_cn, &dw_q, &w0, &dw0, &u, &du, &duq, &u0, &du0,
           &row_partials, &atm_partials, &positions_dev, &eeq_positions_dev, &arena, &partials, &sums,
           &dtrans, &rtrans, &ws_candidates, &self_diag, &self_vir, &recip_e, &trans_sorted, &sf_c, &sf_s,
-          &reverse_scratch}) {
+          &reverse_scratch, &tile_scratch, &eeq_deriv}) {
       make(*buffer);
     }
     make(atm_counters);
@@ -108,6 +111,9 @@ struct D4Context::Impl {
     make(minres_state);
     minres_state.resize(2);
     minres_block_count = cuda::minres_blocks(static_cast<int>(n), device);
+    // Queried once: cudaMemGetInfo synchronises the device.
+    std::size_t free_bytes = 0;
+    VF_CUDA_CHECK(cudaMemGetInfo(&free_bytes, &device_bytes));
     host_minres.reserve(2);
     species_dev.upload_async(species.data(), species.size());
     partials.resize(static_cast<std::size_t>(cuda::kReduceBlocks) * kSumColumns);
@@ -251,12 +257,9 @@ struct D4Context::Impl {
     ewald_mode = eeq.ewald;
   }
 
+  // Half of the device memory unless configured.
   std::size_t matrix_limit() const {
-    if (eeq.max_matrix_bytes > 0) return eeq.max_matrix_bytes;
-    std::size_t free_bytes = 0;
-    std::size_t total = 0;
-    VF_CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total));
-    return total / 2;
+    return eeq.max_matrix_bytes > 0 ? eeq.max_matrix_bytes : device_bytes / 2;
   }
 
   SolveMethod choose_method(std::size_t n) const {
@@ -271,7 +274,7 @@ struct D4Context::Impl {
   }
 
   // MINRES on K x = b into slot ``slot`` of the solver state (0 forward, 1 adjoint).
-  void solve_minres(int slot, const double* b, double* x, bool warm, std::size_t matrix_bytes) {
+  void solve_minres(int slot, const double* b, double* x, bool warm, std::size_t matrix_bytes, int tiles) {
     const std::size_t np = numbers.size() + 1;
     cudaStream_t s = stream.get();
     minres_work.resize(9 * np);
@@ -285,6 +288,11 @@ struct D4Context::Impl {
     args.partials = minres_partials.data();
     args.state = minres_state.data() + slot;
     args.np = static_cast<int>(np);
+    args.tiles = tiles;
+    if (tiles > 0) {
+      tile_partials.resize(static_cast<std::size_t>(tiles) * 64);
+      args.tile_partials = tile_partials.data();
+    }
     args.max_iterations = eeq.max_iterations;
     args.warm = warm ? 1 : 0;
     args.tolerance = eeq.tolerance;
@@ -328,16 +336,22 @@ struct D4Context::Impl {
     if (n == 0) return result;
 
     const std::size_t np = n + 1;
-    const std::size_t matrix_bytes = checked_mul(checked_mul(np, np, "EEQ matrix size"), sizeof(double),
-                                                 "EEQ matrix size");
+    const SolveMethod method = choose_method(n);
+    result.eeq.solver = method == SolveMethod::Minres ? "minres" : "direct";
+    // MINRES with the optimised kernels stores A of large systems as packed
+    // lower-triangle tiles.
+    const bool packed_storage = optimized() && method == SolveMethod::Minres && n >= packed_min_atoms;
+    const int packed_tiles = packed_storage ? cuda::eeq_packed_tiles(static_cast<int>(n)) : 0;
+    const std::size_t matrix_elements =
+        packed_tiles > 0 ? checked_mul(static_cast<std::size_t>(packed_tiles), std::size_t{1024}, "EEQ matrix size")
+                         : checked_mul(np, np, "EEQ matrix size");
+    const std::size_t matrix_bytes = checked_mul(matrix_elements, sizeof(double), "EEQ matrix size");
     if (matrix_bytes > matrix_limit()) {
       fail(ErrorCode::OutOfDeviceMemory,
            "the EEQ matrix of " + std::to_string(n) + " atoms needs " + std::to_string(matrix_bytes) +
                " bytes, above the limit of " + std::to_string(matrix_limit()) + " bytes");
     }
     result.eeq.matrix_bytes = matrix_bytes;
-    const SolveMethod method = choose_method(n);
-    result.eeq.solver = method == SolveMethod::Minres ? "minres" : "direct";
 
     DeviceGuard guard(device);
     cudaStream_t s = stream.get();
@@ -400,7 +414,7 @@ struct D4Context::Impl {
     timer.mark("cn");
 
     // K2: the EEQ charges q (the first n entries of the solution).
-    kmat.resize(np * np);
+    kmat.resize(matrix_elements);
     pivots.resize(np);
     const bool structure = optimized() && periodic;
     if (structure) {
@@ -409,9 +423,18 @@ struct D4Context::Impl {
       sf_s.resize(sf_size);
       cuda::launch_structure_factors(ge, ev, sf_c.data(), sf_s.data(), s);
     }
+    const int slices = optimized() ? cuda::eeq_tile_slices(static_cast<int>(n), periodic, device) : 1;
+    // Periodic gradients: store the pair derivatives during assembly instead
+    // of repeating the lattice sums in the reverse pass, if memory allows.
+    const std::size_t deriv_size =
+        structure && derivatives ? cuda::eeq_derivative_scratch(static_cast<int>(n), slices) : 0;
+    const bool store = deriv_size > 0 && matrix_bytes + deriv_size * sizeof(double) <= matrix_limit();
     if (optimized()) {
+      tile_scratch.resize(std::max<std::size_t>(1, cuda::eeq_assemble_tiles_scratch(static_cast<int>(n), slices)));
+      if (store) eeq_deriv.resize(deriv_size);
       cuda::launch_eeq_assemble_tiles(ge, dv, ev, structure ? sf_c.data() : nullptr,
-                                      structure ? sf_s.data() : nullptr, kmat.data(), s);
+                                      structure ? sf_s.data() : nullptr, slices, tile_scratch.data(), packed_tiles > 0,
+                                      kmat.data(), store ? eeq_deriv.data() : nullptr, s);
     } else {
       cuda::launch_eeq_assemble(ge, dv, ev, kmat.data(), s);
     }
@@ -425,7 +448,7 @@ struct D4Context::Impl {
       result.eeq.warm_started = warm;
       warm_charges = false;
       warm_nu = false;
-      solve_minres(0, rhs.data(), qx.data(), warm, matrix_bytes);
+      solve_minres(0, rhs.data(), qx.data(), warm, matrix_bytes, packed_tiles);
       q = qx.data();
     } else if (method == SolveMethod::SmallLu) {
       cuda::launch_lu_small_factor_solve(kmat.data(), static_cast<int>(n), pivots.data(), rhs.data(),
@@ -479,7 +502,7 @@ struct D4Context::Impl {
         adjoint_rhs.zero_async();
         VF_CUDA_CHECK(
             cudaMemcpyAsync(adjoint_rhs.data(), accum.gq, n * sizeof(double), cudaMemcpyDeviceToDevice, s));
-        solve_minres(1, adjoint_rhs.data(), nu.data(), warm_adjoint, matrix_bytes);
+        solve_minres(1, adjoint_rhs.data(), nu.data(), warm_adjoint, matrix_bytes, packed_tiles);
       } else {
         nu.zero_async();
         VF_CUDA_CHECK(cudaMemcpyAsync(nu.data(), accum.gq, n * sizeof(double), cudaMemcpyDeviceToDevice, s));
@@ -500,10 +523,10 @@ struct D4Context::Impl {
     // K7: charge and CN reverse passes.
     if (derivatives) {
       if (optimized()) {
-        reverse_scratch.resize(cuda::eeq_reverse_tiles_scratch(static_cast<int>(n), ev.n_recip));
+        reverse_scratch.resize(cuda::eeq_reverse_tiles_scratch(static_cast<int>(n), ev.n_recip, slices));
         cuda::launch_eeq_reverse_tiles(ge, dv, ev, structure ? sf_c.data() : nullptr,
-                                       structure ? sf_s.data() : nullptr, q, nu.data(), accum,
-                                       reverse_scratch.data(), s);
+                                       structure ? sf_s.data() : nullptr, q, nu.data(), accum, slices,
+                                       store ? eeq_deriv.data() : nullptr, reverse_scratch.data(), s);
       } else {
         cuda::launch_eeq_reverse(ge, dv, ev, q, nu.data(), accum, s);
       }
@@ -689,15 +712,17 @@ struct D4Context::Impl {
   DeviceBuffer<double> positions_dev, eeq_positions_dev;
   DeviceBuffer<double> arena, partials, sums;
   DeviceBuffer<double> dtrans, rtrans, ws_candidates, self_diag, self_vir, recip_e, trans_sorted;
-  DeviceBuffer<double> sf_c, sf_s, reverse_scratch;
+  DeviceBuffer<double> sf_c, sf_s, reverse_scratch, tile_scratch, eeq_deriv;
   DeviceBuffer<unsigned long long> atm_counters;
   DeviceBuffer<int> species_dev;
   DeviceBuffer<double4_32a> packed, eeq_packed;
   DeviceBuffer<int> pivots, status;
-  DeviceBuffer<double> qx, adjoint_rhs, minres_work, minres_partials;
+  DeviceBuffer<double> qx, adjoint_rhs, minres_work, minres_partials, tile_partials;
   DeviceBuffer<cuda::MinresState> minres_state;
   PinnedBuffer<cuda::MinresState> host_minres;
   int minres_block_count = 0;
+  std::size_t device_bytes = 0;  // total device memory
+  std::size_t packed_min_atoms = kPackedMinAtoms;
   bool warm_charges = false;  // qx holds a converged solution for a warm start
   bool warm_nu = false;       // nu likewise
   PinnedBuffer<unsigned long long> host_counters;
@@ -781,5 +806,11 @@ ContextStats D4Context::stats() const {
 }
 
 void D4Context::testing_set_allocation_limit(std::size_t bytes) { impl_->counters.limit = bytes; }
+
+void D4Context::testing_set_packed_min_atoms(std::size_t atoms) {
+  impl_->packed_min_atoms = atoms > 0 ? atoms : kPackedMinAtoms;
+}
+
+void D4Context::testing_set_matrix_limit(std::size_t bytes) { impl_->eeq.max_matrix_bytes = bytes; }
 
 }  // namespace vanderfast

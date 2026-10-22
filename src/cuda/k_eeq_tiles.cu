@@ -15,6 +15,11 @@
 //
 // The reverse pass writes per-tile row and column partials and reduces them
 // per atom in a fixed order, so gradients and virials are deterministic.
+//
+// Small periodic systems have too few tiles to fill the device, so each
+// tile's translations (and reciprocal chunks) can be split over ``slices``
+// blocks whose partial results are combined in slice order.
+#include <algorithm>
 #include <cfloat>
 
 #include "cuda_check.cuh"
@@ -33,6 +38,7 @@ constexpr int kTileWarps = 8;
 constexpr int kTileThreads = kTileWarps * kWarpSize;
 constexpr int kRowsPerWarp = kTile / kTileWarps;
 constexpr int kChunk = 16;       // reciprocal vectors staged per pass
+constexpr int kMaxSlices = 16;
 constexpr double kErfOne = 5.9;        // erf(x) rounds to 1 beyond (erfc(5.9) = 3.7e-17 < 2^-54)
 constexpr double kConvergedScreen = 6.5;  // erfc(x) < 4e-20 beyond
 constexpr double kExpZero = 6.8;        // exp(-x^2) < 1e-20 beyond
@@ -46,6 +52,12 @@ __device__ __forceinline__ void tile_coords(int t, int& ti, int& tj) {
 }
 
 __device__ __forceinline__ int tile_index(int ti, int tj) { return ti * (ti + 1) / 2 + tj; }
+
+// The translations t = index, index + count, ... of one block.
+struct Slice {
+  int index;
+  int count;
+};
 
 // Wigner-Seitz candidates T minimising |r_a - r_b - T|^2 within 0.01 bohr^2,
 // as a bit mask over the 27 candidates (two passes, no stored distances).
@@ -86,14 +98,20 @@ __device__ __forceinline__ double reach(const EwaldView& e, double gam) {
   return e.mode == kModeConverged ? fmin(screened, e.real_cutoff) : screened;
 }
 
-// Screened real-space sum over the sorted translations for one displacement.
-__device__ double real_value(const EwaldView& e, V3 vec, double gam) {
+// Screened real-space sums over the sorted translations for one displacement:
+// the value (when Value) and, with weight ``scale``, its derivative by the
+// displacement (dg) and a homogeneous strain (ds: xx, yy, zz, yz, xz, xy)
+// (when Deriv). Both share the error functions.
+template <bool Value, bool Deriv>
+__device__ __forceinline__ void real_sums(const EwaldView& e, V3 vec, double gam, double scale, Slice slice,
+                                          double& value, double dg[3], double ds[6]) {
   const double limit = reach(e, gam);
   const double limit2 = limit * limit;
   const double cut = screen(e);
   const double vlen = sqrt(vec.x * vec.x + vec.y * vec.y + vec.z * vec.z);
-  double total = 0.0;
-  for (int t = 0; t < e.n_trans; ++t) {
+  const double gam2 = gam * gam;
+  const double alp2 = e.alpha * e.alpha;
+  for (int t = slice.index; t < e.n_trans; t += slice.count) {
     const double* tr = e.trans_sorted + 4 * t;
     if (tr[3] - vlen > limit) break;  // |vec + T| >= |T| - |vec|
     const double vx = vec.x + tr[0];
@@ -105,65 +123,36 @@ __device__ double real_value(const EwaldView& e, V3 vec, double gam) {
     const double r1 = r2 * inv;
     const double xg = gam * r1;
     const double xa = e.alpha * r1;
+    // f: erf (upstream) or erfc (converged) of both arguments, screened.
+    double fg;
+    double fa;
     if (e.mode == kModeUpstream) {
-      const double fg = xg > cut ? 1.0 : erf(xg);
-      const double fa = xa > cut ? 1.0 : erf(xa);
-      total += (fg - fa) * inv;
+      fg = xg > cut ? 1.0 : erf(xg);
+      fa = xa > cut ? 1.0 : erf(xa);
+      if (Value) value += (fg - fa) * inv;
     } else {
-      const double ca = xa > cut ? 0.0 : erfc(xa);
-      const double cg = xg > cut ? 0.0 : erfc(xg);
-      total += (ca - cg) * inv;
+      fa = xa > cut ? 0.0 : erfc(xa);
+      fg = xg > cut ? 0.0 : erfc(xg);
+      if (Value) value += (fa - fg) * inv;
     }
-  }
-  return total;
-}
-
-// Derivative of real_value by the displacement (dg) and a homogeneous strain
-// (ds: xx, yy, zz, yz, xz, xy), accumulated with weight ``scale``.
-__device__ void real_derivative(const EwaldView& e, V3 vec, double gam, double scale, double dg[3],
-                                double ds[6]) {
-  const double limit = reach(e, gam);
-  const double limit2 = limit * limit;
-  const double cut = screen(e);
-  const double vlen = sqrt(vec.x * vec.x + vec.y * vec.y + vec.z * vec.z);
-  const double gam2 = gam * gam;
-  const double alp2 = e.alpha * e.alpha;
-  for (int t = 0; t < e.n_trans; ++t) {
-    const double* tr = e.trans_sorted + 4 * t;
-    if (tr[3] - vlen > limit) break;
-    const double vx = vec.x + tr[0];
-    const double vy = vec.y + tr[1];
-    const double vz = vec.z + tr[2];
-    const double r2 = vx * vx + vy * vy + vz * vz;
-    if (r2 > limit2 || r2 < kEwaldEps * kEwaldEps) continue;
-    const double inv = rsqrt(r2);
-    const double inv2 = inv * inv;
-    const double r1 = r2 * inv;
-    const double xg = gam * r1;
-    const double xa = e.alpha * r1;
-    // Gaussian slopes 2 gam exp(-gam^2 r^2) and 2 alpha exp(-alpha^2 r^2).
-    const double eg = xg > kExpZero ? 0.0 : 2 * gam * exp(-r2 * gam2);
-    const double ea = xa > kExpZero ? 0.0 : 2 * e.alpha * exp(-r2 * alp2);
-    double dtmp;
-    if (e.mode == kModeUpstream) {
-      const double fg = xg > cut ? 1.0 : erf(xg);
-      const double fa = xa > cut ? 1.0 : erf(xa);
-      dtmp = (eg - ea) * inv2 / kSqrtPi + (fa - fg) * inv2 * inv;
-    } else {
-      const double ca = xa > cut ? 0.0 : erfc(xa);
-      const double cg = xg > cut ? 0.0 : erfc(xg);
-      dtmp = ((eg - ea) / kSqrtPi - (ca - cg) * inv) * inv2;
+    if (Deriv) {
+      const double inv2 = inv * inv;
+      // Gaussian slopes 2 gam exp(-gam^2 r^2) and 2 alpha exp(-alpha^2 r^2).
+      const double eg = xg > kExpZero ? 0.0 : 2 * gam * exp(-r2 * gam2);
+      const double ea = xa > kExpZero ? 0.0 : 2 * e.alpha * exp(-r2 * alp2);
+      double dtmp = e.mode == kModeUpstream ? (eg - ea) * inv2 / kSqrtPi + (fa - fg) * inv2 * inv
+                                            : ((eg - ea) / kSqrtPi - (fa - fg) * inv) * inv2;
+      dtmp *= scale;
+      dg[0] += dtmp * vx;
+      dg[1] += dtmp * vy;
+      dg[2] += dtmp * vz;
+      ds[0] += dtmp * vx * vx;
+      ds[1] += dtmp * vy * vy;
+      ds[2] += dtmp * vz * vz;
+      ds[3] += dtmp * vy * vz;
+      ds[4] += dtmp * vx * vz;
+      ds[5] += dtmp * vx * vy;
     }
-    dtmp *= scale;
-    dg[0] += dtmp * vx;
-    dg[1] += dtmp * vy;
-    dg[2] += dtmp * vz;
-    ds[0] += dtmp * vx * vx;
-    ds[1] += dtmp * vy * vy;
-    ds[2] += dtmp * vz * vz;
-    ds[3] += dtmp * vy * vz;
-    ds[4] += dtmp * vx * vz;
-    ds[5] += dtmp * vx * vy;
   }
 }
 
@@ -171,71 +160,82 @@ __device__ __forceinline__ double pair_gamma(const D4View& d, int si, int sj) {
   return 1.0 / sqrt(d.rad[si] * d.rad[si] + d.rad[sj] * d.rad[sj]);
 }
 
-// Real-space (periodic) or complete (molecular) matrix element of a pair.
-__device__ double pair_real(const GeometryView& g, const D4View& d, const EwaldView& e, int i, int j) {
-  const int si = species(g, i);
-  const int sj = species(g, j);
+// Real-space sums of a periodic pair (Wigner-Seitz averaged in upstream mode):
+// the matrix element (Value) and d(element)/d(r_j - r_i) with its strain
+// derivative (Deriv), both zeroed first.
+template <bool Value, bool Deriv>
+__device__ __forceinline__ void pair_periodic(const GeometryView& g, const D4View& d, const EwaldView& e, int i,
+                                              int j, Slice slice, double& value, double dg[3], double ds[6]) {
+  value = 0.0;
+  for (int c = 0; c < 3; ++c) dg[c] = 0.0;
+  for (int c = 0; c < 6; ++c) ds[c] = 0.0;
   const V3 xi = pos3(g, i);
   const V3 xj = pos3(g, j);
   const V3 vec0{xj.x - xi.x, xj.y - xi.y, xj.z - xi.z};
-  if (e.mode == kModeMolecular) {
-    const double r2 = vec0.x * vec0.x + vec0.y * vec0.y + vec0.z * vec0.z;
-    const double gam = 1.0 / (d.rad[si] * d.rad[si] + d.rad[sj] * d.rad[sj]);
-    return erf(sqrt(r2 * gam)) / sqrt(r2);
+  const double gam = pair_gamma(d, species(g, i), species(g, j));
+  if (e.mode == kModeConverged) {
+    real_sums<Value, Deriv>(e, vec0, gam, 1.0, slice, value, dg, ds);
+    return;
   }
-  const double gam = pair_gamma(d, si, sj);
-  if (e.mode == kModeConverged) return real_value(e, vec0, gam);
   int count = 0;
   const unsigned mask = ws_mask(e, xi, xj, count);
   const double wsw = 1.0 / static_cast<double>(count);
-  double total = 0.0;
   for (int c = 0; c < kWsCandidates; ++c) {
     if (!((mask >> c) & 1u)) continue;
     const double* t = e.ws_candidates + 3 * c;
-    total += real_value(e, {vec0.x + t[0], vec0.y + t[1], vec0.z + t[2]}, gam) * wsw;
+    double part = 0.0;
+    real_sums<Value, Deriv>(e, {vec0.x + t[0], vec0.y + t[1], vec0.z + t[2]}, gam, wsw, slice, part, dg, ds);
+    value += part * wsw;
   }
-  return total;
+}
+
+// Real-space (periodic) or complete (molecular) matrix element of a pair.
+__device__ __forceinline__ double pair_real(const GeometryView& g, const D4View& d, const EwaldView& e, int i,
+                                            int j, Slice slice) {
+  if (e.mode == kModeMolecular) {  // molecular systems use one slice
+    const int si = species(g, i);
+    const int sj = species(g, j);
+    const V3 xi = pos3(g, i);
+    const V3 xj = pos3(g, j);
+    const double dx = xj.x - xi.x;
+    const double dy = xj.y - xi.y;
+    const double dz = xj.z - xi.z;
+    const double r2 = dx * dx + dy * dy + dz * dz;
+    const double gam = 1.0 / (d.rad[si] * d.rad[si] + d.rad[sj] * d.rad[sj]);
+    return erf(sqrt(r2 * gam)) / sqrt(r2);
+  }
+  double value;
+  double dg[3];
+  double ds[6];
+  pair_periodic<true, false>(g, d, e, i, j, slice, value, dg, ds);
+  return value;
 }
 
 // d(element)/d(r_j - r_i) and its strain derivative, real space only for
 // periodic systems.
 __device__ void pair_real_derivative(const GeometryView& g, const D4View& d, const EwaldView& e, int i, int j,
-                                     double dg[3], double ds[6]) {
-  for (int c = 0; c < 3; ++c) dg[c] = 0.0;
-  for (int c = 0; c < 6; ++c) ds[c] = 0.0;
-  const int si = species(g, i);
-  const int sj = species(g, j);
+                                     Slice slice, double dg[3], double ds[6]) {
+  if (e.mode != kModeMolecular) {
+    double value;
+    pair_periodic<false, true>(g, d, e, i, j, slice, value, dg, ds);
+    return;
+  }
   const V3 xi = pos3(g, i);
   const V3 xj = pos3(g, j);
   const V3 vec0{xj.x - xi.x, xj.y - xi.y, xj.z - xi.z};
-  const double gam = pair_gamma(d, si, sj);
-  if (e.mode == kModeMolecular) {
-    const double r2 = vec0.x * vec0.x + vec0.y * vec0.y + vec0.z * vec0.z;
-    const double arg = gam * gam * r2;
-    const double dtmp = 2.0 * gam * exp(-arg) / (kSqrtPi * r2) - erf(sqrt(arg)) / (r2 * sqrt(r2));
-    dg[0] = dtmp * vec0.x;
-    dg[1] = dtmp * vec0.y;
-    dg[2] = dtmp * vec0.z;
-    ds[0] = dtmp * vec0.x * vec0.x;
-    ds[1] = dtmp * vec0.y * vec0.y;
-    ds[2] = dtmp * vec0.z * vec0.z;
-    ds[3] = dtmp * vec0.y * vec0.z;
-    ds[4] = dtmp * vec0.x * vec0.z;
-    ds[5] = dtmp * vec0.x * vec0.y;
-    return;
-  }
-  if (e.mode == kModeConverged) {
-    real_derivative(e, vec0, gam, 1.0, dg, ds);
-    return;
-  }
-  int count = 0;
-  const unsigned mask = ws_mask(e, xi, xj, count);
-  const double wsw = 1.0 / static_cast<double>(count);
-  for (int c = 0; c < kWsCandidates; ++c) {
-    if (!((mask >> c) & 1u)) continue;
-    const double* t = e.ws_candidates + 3 * c;
-    real_derivative(e, {vec0.x + t[0], vec0.y + t[1], vec0.z + t[2]}, gam, wsw, dg, ds);
-  }
+  const double gam = pair_gamma(d, species(g, i), species(g, j));
+  const double r2 = vec0.x * vec0.x + vec0.y * vec0.y + vec0.z * vec0.z;
+  const double arg = gam * gam * r2;
+  const double dtmp = 2.0 * gam * exp(-arg) / (kSqrtPi * r2) - erf(sqrt(arg)) / (r2 * sqrt(r2));
+  dg[0] = dtmp * vec0.x;
+  dg[1] = dtmp * vec0.y;
+  dg[2] = dtmp * vec0.z;
+  ds[0] = dtmp * vec0.x * vec0.x;
+  ds[1] = dtmp * vec0.y * vec0.y;
+  ds[2] = dtmp * vec0.z * vec0.z;
+  ds[3] = dtmp * vec0.y * vec0.z;
+  ds[4] = dtmp * vec0.x * vec0.z;
+  ds[5] = dtmp * vec0.x * vec0.y;
 }
 
 __global__ void structure_factor_kernel(GeometryView g, EwaldView e, double* __restrict__ c,
@@ -254,19 +254,82 @@ __global__ void structure_factor_kernel(GeometryView g, EwaldView e, double* __r
   s[idx] = sine;
 }
 
-__global__ void __launch_bounds__(kTileThreads)
+// Write a lower-triangle tile held in ``out`` to K and mirror it through
+// shared memory so the transposed writes stay coalesced.
+__device__ __forceinline__ void store_tile(double (*out)[kTile + 1], int ti, int tj, int n, double* __restrict__ k) {
+  const long long np = n + 1;
+  const int lane = lane_id();
+  const int warp = static_cast<int>(threadIdx.x) / kWarpSize;
+  const int j = tj * kTile + lane;
+  for (int q = 0; q < kRowsPerWarp; ++q) {
+    const int r = warp + q * kTileWarps;
+    const int i = ti * kTile + r;
+    if (i < n && j < n && i > j) k[i * np + j] = out[r][lane];
+  }
+  __syncthreads();
+  for (int q = 0; q < kRowsPerWarp; ++q) {
+    const int r = warp + q * kTileWarps;
+    const int jj = tj * kTile + r;
+    const int ii = ti * kTile + lane;
+    if (ii < n && jj < n && ii > jj) k[jj * np + ii] = out[lane][r];
+  }
+}
+
+__device__ __forceinline__ double diagonal(const GeometryView& g, const D4View& d, const EwaldView& e, int i) {
+  const int si = species(g, i);
+  return e.mode == kModeMolecular ? d.eta[si] + kSqrt2Pi / d.rad[si] : e.self_diag[si];
+}
+
+// Packed storage for MINRES: lower-triangle tile (I, J), I >= J, as a
+// row-major 32 x 32 block at tile_index(I, J) * 1024. Diagonal tiles hold
+// both triangles and the diagonal; entries beyond n are zero; the border
+// (all ones) is implicit.
+__device__ __forceinline__ void store_packed(double (*out)[kTile + 1], int tile, int ti, int tj,
+                                             const GeometryView& g, const D4View& d, const EwaldView& e,
+                                             double* __restrict__ kp) {
+  const int lane = lane_id();
+  const int warp = static_cast<int>(threadIdx.x) / kWarpSize;
+  double* dst = kp + static_cast<long long>(tile) * kTile * kTile;
+  for (int q = 0; q < kRowsPerWarp; ++q) {
+    const int r = warp + q * kTileWarps;
+    const int i = ti * kTile + r;
+    const int j = tj * kTile + lane;
+    double value = 0.0;
+    if (i < g.n && j < g.n) {
+      if (ti != tj || r > lane) {
+        value = out[r][lane];
+      } else if (r < lane) {
+        value = out[lane][r];
+      } else {
+        value = diagonal(g, d, e, i);
+      }
+    }
+    dst[r * kTile + lane] = value;
+  }
+}
+
+// Block b handles tile b % tiles and slice b / tiles. With one slice the
+// tile goes straight to K (dense, or packed when ``packed``); otherwise to
+// ``partial`` [slices][tiles][32 * 32]. With Store (periodic systems) the
+// real-space derivatives of every pair go to ``deriv``
+// [slices][tiles][9][32 * 32] (dg then ds) for the reverse pass.
+// (Two resident blocks per SM: ptxas would otherwise spill to fit three.)
+template <bool Store>
+__global__ void __launch_bounds__(kTileThreads, 2)
     eeq_assemble_tiles_kernel(GeometryView g, D4View d, EwaldView e, const double* __restrict__ sf_c,
-                              const double* __restrict__ sf_s, double* __restrict__ k) {
+                              const double* __restrict__ sf_s, int tiles, int slices, bool packed,
+                              double* __restrict__ k, double* __restrict__ partial, double* __restrict__ deriv) {
   __shared__ double out[kTile][kTile + 1];
   __shared__ double row_c[kChunk][kTile];
   __shared__ double row_s[kChunk][kTile];
   __shared__ double col_c[kChunk][kTile];
   __shared__ double col_s[kChunk][kTile];
+  const int tile = static_cast<int>(blockIdx.x) % tiles;
+  const Slice slice{static_cast<int>(blockIdx.x) / tiles, slices};
   int ti;
   int tj;
-  tile_coords(static_cast<int>(blockIdx.x), ti, tj);
+  tile_coords(tile, ti, tj);
   const int n = g.n;
-  const long long np = n + 1;
   const int lane = lane_id();
   const int warp = static_cast<int>(threadIdx.x) / kWarpSize;
   const int j = tj * kTile + lane;
@@ -274,10 +337,22 @@ __global__ void __launch_bounds__(kTileThreads)
   for (int q = 0; q < kRowsPerWarp; ++q) {
     const int r = warp + q * kTileWarps;
     const int i = ti * kTile + r;
-    out[r][lane] = (i < n && j < n && i > j) ? pair_real(g, d, e, i, j) : 0.0;
+    const bool live = i < n && j < n && i > j && (e.mode != kModeMolecular || slice.index == 0);
+    if (Store) {
+      double value = 0.0;
+      double dg[3] = {0.0, 0.0, 0.0};
+      double ds[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+      if (live) pair_periodic<true, true>(g, d, e, i, j, slice, value, dg, ds);
+      out[r][lane] = value;
+      double* dst = deriv + (static_cast<long long>(slice.index) * tiles + tile) * 9 * kTile * kTile + r * kTile + lane;
+      for (int c = 0; c < 3; ++c) dst[c * kTile * kTile] = dg[c];
+      for (int c = 0; c < 6; ++c) dst[(3 + c) * kTile * kTile] = ds[c];
+    } else {
+      out[r][lane] = live ? pair_real(g, d, e, i, j, slice) : 0.0;
+    }
   }
   if (e.mode != kModeMolecular) {
-    for (int g0 = 0; g0 < e.n_recip; g0 += kChunk) {
+    for (int g0 = slice.index * kChunk; g0 < e.n_recip; g0 += slices * kChunk) {
       for (int idx = static_cast<int>(threadIdx.x); idx < kChunk * kTile; idx += kTileThreads) {
         const int gg = idx / kTile;
         const int a = idx % kTile;
@@ -305,19 +380,46 @@ __global__ void __launch_bounds__(kTileThreads)
       __syncthreads();
     }
   }
+  if (slices == 1) {
+    __syncthreads();
+    if (packed) {
+      store_packed(out, tile, ti, tj, g, d, e, k);
+    } else {
+      store_tile(out, ti, tj, n, k);
+    }
+    return;
+  }
+  double* dst = partial + (static_cast<long long>(slice.index) * tiles + tile) * kTile * kTile;
   for (int q = 0; q < kRowsPerWarp; ++q) {
     const int r = warp + q * kTileWarps;
-    const int i = ti * kTile + r;
-    if (i < n && j < n && i > j) k[i * np + j] = out[r][lane];
+    dst[r * kTile + lane] = out[r][lane];
+  }
+}
+
+// Sum the slices of each tile in slice order and store it.
+__global__ void __launch_bounds__(kTileThreads)
+    eeq_assemble_slices_kernel(GeometryView g, D4View d, EwaldView e, int tiles, int slices, bool packed,
+                               const double* __restrict__ partial, double* __restrict__ k) {
+  __shared__ double out[kTile][kTile + 1];
+  const int tile = static_cast<int>(blockIdx.x);
+  int ti;
+  int tj;
+  tile_coords(tile, ti, tj);
+  const int lane = lane_id();
+  const int warp = static_cast<int>(threadIdx.x) / kWarpSize;
+  for (int q = 0; q < kRowsPerWarp; ++q) {
+    const int r = warp + q * kTileWarps;
+    double total = 0.0;
+    for (int s = 0; s < slices; ++s) {
+      total += partial[(static_cast<long long>(s) * tiles + tile) * kTile * kTile + r * kTile + lane];
+    }
+    out[r][lane] = total;
   }
   __syncthreads();
-  // Mirror through shared memory so the transposed writes stay coalesced.
-#pragma unroll
-  for (int q = 0; q < kRowsPerWarp; ++q) {
-    const int r = warp + q * kTileWarps;
-    const int jj = tj * kTile + r;
-    const int ii = ti * kTile + lane;
-    if (ii < n && jj < n && ii > jj) k[jj * np + ii] = out[lane][r];
+  if (packed) {
+    store_packed(out, tile, ti, tj, g, d, e, k);
+  } else {
+    store_tile(out, ti, tj, g.n, k);
   }
 }
 
@@ -340,14 +442,20 @@ __global__ void eeq_diagonal_kernel(GeometryView g, D4View d, EwaldView e, doubl
 // gradients (3 each) and 6 virial components, then 5 structure sums per G.
 constexpr int kTileRecord = 2 * kTile * 3 + 6;
 
+// Block b handles tile b % tiles and slice b / tiles; its record is record b.
+// With Stored the pair derivatives come from the assembly pass (summed over
+// its ``deriv_slices`` in order) and a single slice is used.
+template <bool Stored>
 __global__ void __launch_bounds__(kTileThreads)
     eeq_reverse_tiles_kernel(GeometryView g, D4View d, EwaldView e, const double* __restrict__ q,
-                             const double* __restrict__ nu, double* __restrict__ tiles) {
+                             const double* __restrict__ nu, int tile_total, int slices,
+                             const double* __restrict__ deriv, int deriv_slices, double* __restrict__ tiles) {
   __shared__ double col[kTileWarps][kTile][3];
   __shared__ double vir_s[kTileWarps][6];
+  const Slice slice{static_cast<int>(blockIdx.x) / tile_total, slices};
   int ti;
   int tj;
-  tile_coords(static_cast<int>(blockIdx.x), ti, tj);
+  tile_coords(static_cast<int>(blockIdx.x) % tile_total, ti, tj);
   const int n = g.n;
   const int lane = lane_id();
   const int warp = static_cast<int>(threadIdx.x) / kWarpSize;
@@ -361,8 +469,18 @@ __global__ void __launch_bounds__(kTileThreads)
     double dg[3] = {0.0, 0.0, 0.0};
     double ds[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     double w = 0.0;
-    if (i < n && j < n && i > j) {
-      pair_real_derivative(g, d, e, i, j, dg, ds);
+    if (i < n && j < n && i > j && (e.mode != kModeMolecular || slice.index == 0)) {
+      if (Stored) {
+        const int tile = static_cast<int>(blockIdx.x) % tile_total;
+        for (int s = 0; s < deriv_slices; ++s) {
+          const double* src =
+              deriv + (static_cast<long long>(s) * tile_total + tile) * 9 * kTile * kTile + r * kTile + lane;
+          for (int c = 0; c < 3; ++c) dg[c] += src[c * kTile * kTile];
+          for (int c = 0; c < 6; ++c) ds[c] += src[(3 + c) * kTile * kTile];
+        }
+      } else {
+        pair_real_derivative(g, d, e, i, j, slice, dg, ds);
+      }
       w = nu[i] * q[j] + nu[j] * q[i];
     }
     // Row atom i (the larger index) takes +w dg, column atom j takes -w dg.
@@ -429,7 +547,8 @@ __global__ void structure_sums_kernel(int n, const double* __restrict__ sf_c, co
 __global__ void eeq_reverse_atoms_kernel(GeometryView g, EwaldView e, const double* __restrict__ sf_c,
                                          const double* __restrict__ sf_s, const double* __restrict__ q,
                                          const double* __restrict__ nu, const double* __restrict__ tiles,
-                                         const double* __restrict__ sums, AccumView acc) {
+                                         int tile_total, int slices, const double* __restrict__ sums,
+                                         AccumView acc) {
   const int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
   const int n = g.n;
   if (i >= n) return;
@@ -437,13 +556,16 @@ __global__ void eeq_reverse_atoms_kernel(GeometryView g, EwaldView e, const doub
   const int ti = i / kTile;
   const int slot = i % kTile;
   double grad[3] = {0.0, 0.0, 0.0};
-  for (int tj = 0; tj <= ti; ++tj) {
-    const double* record = tiles + static_cast<long long>(tile_index(ti, tj)) * kTileRecord;
-    for (int c = 0; c < 3; ++c) grad[c] += record[slot * 3 + c];
-  }
-  for (int t2 = ti; t2 < t_rows; ++t2) {
-    const double* record = tiles + static_cast<long long>(tile_index(t2, ti)) * kTileRecord;
-    for (int c = 0; c < 3; ++c) grad[c] += record[kTile * 3 + slot * 3 + c];
+  for (int s = 0; s < slices; ++s) {
+    const double* base = tiles + static_cast<long long>(s) * tile_total * kTileRecord;
+    for (int tj = 0; tj <= ti; ++tj) {
+      const double* record = base + static_cast<long long>(tile_index(ti, tj)) * kTileRecord;
+      for (int c = 0; c < 3; ++c) grad[c] += record[slot * 3 + c];
+    }
+    for (int t2 = ti; t2 < t_rows; ++t2) {
+      const double* record = base + static_cast<long long>(tile_index(t2, ti)) * kTileRecord;
+      for (int c = 0; c < 3; ++c) grad[c] += record[kTile * 3 + slot * 3 + c];
+    }
   }
   if (e.mode != kModeMolecular) {
     // -d/dr_i of sum_{a != b} nu_a q_b sum_G e_G cos(G.(r_b - r_a)), as the
@@ -521,39 +643,83 @@ void launch_structure_factors(const GeometryView& g, const EwaldView& e, double*
   VF_LAUNCH_CHECK(stream);
 }
 
+int eeq_tile_slices(int n, bool periodic, int device) {
+  if (!periodic || n < 2) return 1;
+  int sms = 0;
+  VF_CUDA_CHECK(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device));
+  const int tiles = tile_count(n);
+  return std::clamp((4 * sms + tiles - 1) / tiles, 1, kMaxSlices);
+}
+
+std::size_t eeq_assemble_tiles_scratch(int n, int slices) {
+  return slices > 1 ? static_cast<std::size_t>(slices) * tile_count(n) * kTile * kTile : 0;
+}
+
+int eeq_packed_tiles(int n) { return tile_count(n); }
+
+std::size_t eeq_derivative_scratch(int n, int slices) {
+  return static_cast<std::size_t>(slices) * tile_count(n) * 9 * kTile * kTile;
+}
+
 void launch_eeq_assemble_tiles(const GeometryView& g, const D4View& d, const EwaldView& e, const double* sf_c,
-                               const double* sf_s, double* k, cudaStream_t stream) {
-  if (g.n > 1) {
-    eeq_assemble_tiles_kernel<<<static_cast<unsigned>(tile_count(g.n)), kTileThreads, 0, stream>>>(g, d, e, sf_c,
-                                                                                                 sf_s, k);
+                               const double* sf_s, int slices, double* scratch, bool packed, double* k,
+                               double* deriv, cudaStream_t stream) {
+  // Packed storage needs every tile, including the diagonal of a single atom.
+  if (g.n > 1 || (packed && g.n == 1)) {
+    const int tiles = tile_count(g.n);
+    const unsigned blocks = static_cast<unsigned>(tiles * slices);
+    if (deriv != nullptr && e.mode != kModeMolecular) {
+      eeq_assemble_tiles_kernel<true><<<blocks, kTileThreads, 0, stream>>>(g, d, e, sf_c, sf_s, tiles, slices,
+                                                                          packed, k, scratch, deriv);
+    } else {
+      eeq_assemble_tiles_kernel<false><<<blocks, kTileThreads, 0, stream>>>(g, d, e, sf_c, sf_s, tiles, slices,
+                                                                           packed, k, scratch, nullptr);
+    }
     VF_LAUNCH_CHECK(stream);
+    if (slices > 1) {
+      eeq_assemble_slices_kernel<<<static_cast<unsigned>(tiles), kTileThreads, 0, stream>>>(g, d, e, tiles, slices,
+                                                                                         packed, scratch, k);
+      VF_LAUNCH_CHECK(stream);
+    }
   }
+  if (packed) return;
   eeq_diagonal_kernel<<<static_cast<unsigned>((g.n + 1 + 255) / 256), 256, 0, stream>>>(g, d, e, k);
   VF_LAUNCH_CHECK(stream);
 }
 
-std::size_t eeq_reverse_tiles_scratch(int n, int n_recip) {
-  return static_cast<std::size_t>(tile_count(n)) * kTileRecord + 5 * static_cast<std::size_t>(n_recip);
+std::size_t eeq_reverse_tiles_scratch(int n, int n_recip, int slices) {
+  return static_cast<std::size_t>(slices) * tile_count(n) * kTileRecord + 5 * static_cast<std::size_t>(n_recip);
 }
 
 void launch_eeq_reverse_tiles(const GeometryView& g, const D4View& d, const EwaldView& e, const double* sf_c,
                               const double* sf_s, const double* q, const double* nu, const AccumView& acc,
-                              double* scratch, cudaStream_t stream) {
+                              int slices, const double* deriv, double* scratch, cudaStream_t stream) {
   const int n = g.n;
   if (n == 0) return;
+  // Stored derivatives need no lattice sums here, so one slice suffices.
+  const bool stored = deriv != nullptr && e.mode != kModeMolecular;
+  const int deriv_slices = slices;
+  if (stored) slices = 1;
   const int tiles = tile_count(n);
-  double* sums = scratch + static_cast<std::size_t>(tiles) * kTileRecord;
+  double* sums = scratch + static_cast<std::size_t>(slices) * tiles * kTileRecord;
   const int recip = e.mode == kModeMolecular ? 0 : e.n_recip;
   if (recip > 0) {
     structure_sums_kernel<<<static_cast<unsigned>(recip), kTileThreads, 0, stream>>>(n, sf_c, sf_s, q, nu, sums);
     VF_LAUNCH_CHECK(stream);
   }
-  eeq_reverse_tiles_kernel<<<static_cast<unsigned>(tiles), kTileThreads, 0, stream>>>(g, d, e, q, nu, scratch);
+  const unsigned blocks = static_cast<unsigned>(tiles * slices);
+  if (stored) {
+    eeq_reverse_tiles_kernel<true><<<blocks, kTileThreads, 0, stream>>>(g, d, e, q, nu, tiles, slices, deriv,
+                                                                       deriv_slices, scratch);
+  } else {
+    eeq_reverse_tiles_kernel<false><<<blocks, kTileThreads, 0, stream>>>(g, d, e, q, nu, tiles, slices, nullptr, 0,
+                                                                        scratch);
+  }
   VF_LAUNCH_CHECK(stream);
-  eeq_reverse_atoms_kernel<<<static_cast<unsigned>((n + 127) / 128), 128, 0, stream>>>(g, e, sf_c, sf_s, q, nu,
-                                                                                       scratch, sums, acc);
+  eeq_reverse_atoms_kernel<<<static_cast<unsigned>((n + 127) / 128), 128, 0, stream>>>(
+      g, e, sf_c, sf_s, q, nu, scratch, tiles, slices, sums, acc);
   VF_LAUNCH_CHECK(stream);
-  eeq_reverse_virial_kernel<<<1, kTileThreads, 0, stream>>>(n, tiles, e, scratch, sums, acc);
+  eeq_reverse_virial_kernel<<<1, kTileThreads, 0, stream>>>(n, tiles * slices, e, scratch, sums, acc);
   VF_LAUNCH_CHECK(stream);
 }
 

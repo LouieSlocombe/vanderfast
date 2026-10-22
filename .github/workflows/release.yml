@@ -129,7 +129,7 @@ jobs:
         run: |
           python -m venv --clear "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/python" -m pip install --upgrade pip
-          "$RUNNER_TEMP/venv/bin/python" -m pip install dist/*.whl "dftd3==1.6.0" pytest pytest-cov
+          "$RUNNER_TEMP/venv/bin/python" -m pip install dist/*.whl "dftd3==1.6.0" "dftd4==4.2.0" pytest pytest-cov
 
       - name: Run the full suite on the GPU
         shell: bash {0}

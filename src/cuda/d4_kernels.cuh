@@ -97,7 +97,7 @@ void launch_lu_small_solve(const double* lu, int n, const int* pivots, double* b
 // fixed-order partial sums, so results are bitwise reproducible. Converged
 // inner iterations are checked against the true residual, eta = |b - Kx|_inf /
 // (|K|_inf |x|_inf + |b|_inf), and restarted from x until eta <= 2^-48.
-constexpr int kMinresSlots = 9;  // per-block partial sums held at once
+constexpr int kMinresSlots = 10;  // per-block partial sums held at once
 
 struct MinresState {
   double beta, oldb, dbar, epsln, phibar, cs, sn, beta1, gmax, gmin;
@@ -112,13 +112,15 @@ struct MinresState {
 };
 
 struct MinresArgs {
-  const double* k;   // [(n + 1)^2]
+  const double* k;   // [(n + 1)^2], or packed tiles (eeq_packed_tiles)
   const double* b;   // [n + 1]
   double* x;         // [n + 1] solution; the initial guess when ``warm``
   double* work;      // [9 * (n + 1)] r1, r2, z, v, y, w, w2, m, r
   double* partials;  // [kMinresSlots * blocks]
+  double* tile_partials;  // packed: [tiles * 64] row and column sums per tile
   MinresState* state;
   int np;
+  int tiles;         // packed tiles, 0 for dense storage
   int max_iterations;
   int warm;
   double tolerance;  // accepted eta
@@ -133,21 +135,36 @@ void launch_minres(const MinresArgs& args, int blocks, int iterations, cudaStrea
 void launch_structure_factors(const GeometryView& g, const EwaldView& e, double* c, double* s,
                               cudaStream_t stream);
 
+// EEQ (optimised): blocks per tile, splitting the lattice sums of small
+// periodic systems so the tiles fill the device (1 for molecules).
+int eeq_tile_slices(int n, bool periodic, int device);
+std::size_t eeq_assemble_tiles_scratch(int n, int slices);
+
 // EEQ (optimised): K from 32 x 32 lower-triangle tiles (screened, length-sorted
-// real-space sums and the reciprocal part from structure factors), plus the
-// diagonal and the border.
+// real-space sums and the reciprocal part from structure factors);
+// ``scratch`` holds eeq_assemble_tiles_scratch doubles. Dense output is the
+// bordered (n + 1)^2 matrix; packed output is the eeq_packed_tiles(n)
+// lower-triangle 32 x 32 tiles of A (diagonal tiles in full, border implicit).
+// With ``deriv`` (periodic systems, eeq_derivative_scratch doubles) the
+// real-space derivatives of every pair are stored for the reverse pass.
+int eeq_packed_tiles(int n);
+std::size_t eeq_derivative_scratch(int n, int slices);
 void launch_eeq_assemble_tiles(const GeometryView& g, const D4View& d, const EwaldView& e,
-                               const double* sf_c, const double* sf_s, double* k, cudaStream_t stream);
+                               const double* sf_c, const double* sf_s, int slices, double* scratch,
+                               bool packed, double* k, double* deriv, cudaStream_t stream);
 
 // Partial buffers of the tiled reverse pass (doubles).
-std::size_t eeq_reverse_tiles_scratch(int n, int n_recip);
+std::size_t eeq_reverse_tiles_scratch(int n, int n_recip, int slices);
 
 // EEQ reverse (optimised): each pair once per lower-triangle tile with
 // fixed-order per-tile partials, the reciprocal part through structure sums,
 // and the self images; deterministic.
+// ``deriv``: the derivatives stored by launch_eeq_assemble_tiles, or null to
+// recompute the lattice sums.
 void launch_eeq_reverse_tiles(const GeometryView& g, const D4View& d, const EwaldView& e,
                               const double* sf_c, const double* sf_s, const double* q, const double* nu,
-                              const AccumView& acc, double* scratch, cudaStream_t stream);
+                              const AccumView& acc, int slices, const double* deriv, double* scratch,
+                              cudaStream_t stream);
 
 // EEQ reverse: gradient and virial of -nu^T A q (owner rows, deterministic).
 void launch_eeq_reverse(const GeometryView& g, const D4View& d, const EwaldView& e,

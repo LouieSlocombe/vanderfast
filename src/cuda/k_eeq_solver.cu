@@ -3,11 +3,17 @@
 //
 // MINRES follows Paige and Saunders (scipy.sparse.linalg.minres) with a
 // diagonal positive-definite preconditioner. Each iteration is one matrix
-// row sweep and two grid-wide reductions; every block evaluates the scalar
+// sweep and two grid-wide reductions; every block evaluates the scalar
 // recurrences itself from the same fixed-order partial sums, so the blocks
 // agree bitwise and the result does not depend on scheduling. Vectors that
 // other blocks write during the launch are read with ld.global.cg (L2), as
 // L1 is not coherent across SMs.
+//
+// K is either the dense bordered matrix (row sweeps) or packed
+// lower-triangle 32 x 32 tiles of A with an implicit border: each tile is
+// read once and contributes its row sums and, off the diagonal, its column
+// sums, which a second step adds up per row in a fixed order. Packing halves
+// the memory traffic of a matrix product at the cost of one more grid sync.
 #include <cooperative_groups.h>
 
 #include <algorithm>
@@ -44,8 +50,10 @@ enum Slot : int {
   kSlotBeta,
   kSlotX,
   kSlotScale,
+  kSlotSum,
 };
-static_assert(kSlotScale < kMinresSlots, "MINRES partial slots");
+static_assert(kSlotSum < kMinresSlots, "MINRES partial slots");
+constexpr int kTile = 32;
 
 // ---------------------------------------------------------------- small LU
 
@@ -196,11 +204,117 @@ __device__ double grid_reduce(const double* partials, int slot, double* shared, 
   return total;
 }
 
-// Row ``i`` of K times a vector that other blocks write (result in lane 0).
-__device__ __forceinline__ double row_times(const double* __restrict__ row, const double* vec, int np) {
+__device__ __forceinline__ void tile_coords(int t, int& ti, int& tj) {
+  int row = static_cast<int>((sqrt(8.0 * t + 1.0) - 1.0) * 0.5);
+  while (row * (row + 1) / 2 > t) --row;
+  while ((row + 1) * (row + 2) / 2 <= t) ++row;
+  ti = row;
+  tj = t - row * (row + 1) / 2;
+}
+
+__device__ __forceinline__ long long tile_index(int ti, int tj) { return ti * (ti + 1) / 2 + tj; }
+
+// Each lane holds v[0..31]; lane l returns the sum of v[l] over the warp. A
+// butterfly reduce-scatter: at each stage a lane keeps the half of its values
+// selected by its lane bit and adds the partner's copy of that half (31
+// shuffles in all, a fixed summation order).
+template <int Half>
+__device__ __forceinline__ void scatter_stage(double (&v)[kTile], int lane) {
+  const bool upper = (lane & Half) != 0;
+#pragma unroll
+  for (int k = 0; k < Half; ++k) {
+    const double send = upper ? v[k] : v[k + Half];
+    const double keep = upper ? v[k + Half] : v[k];
+    v[k] = keep + __shfl_xor_sync(kAllLanes, send, Half);
+  }
+}
+
+__device__ __forceinline__ double reduce_scatter(double (&v)[kTile]) {
+  const int lane = lane_id();
+  scatter_stage<16>(v, lane);
+  scatter_stage<8>(v, lane);
+  scatter_stage<4>(v, lane);
+  scatter_stage<2>(v, lane);
+  scatter_stage<1>(v, lane);
+  return v[0];
+}
+
+// First step of y = K u: dense storage needs nothing; packed storage writes
+// every tile's row and column sums and returns y_n = sum_{i<n} u_i (the
+// border row). ``Abs`` uses |K| and u = 1 (row sums of |K|). Ends with a
+// grid sync for packed storage.
+template <bool Packed, bool Abs>
+__device__ double prepare(const MinresArgs& a, const double* u, cg::grid_group& grid, double* shared) {
+  if (!Packed) return 0.0;
+  const int n = a.np - 1;
+  const int lane = lane_id();
+  const int gw = static_cast<int>(blockIdx.x) * kSolverWarps + static_cast<int>(threadIdx.x) / kWarpSize;
+  const int tw = static_cast<int>(gridDim.x) * kSolverWarps;
+  for (int t = gw; t < a.tiles; t += tw) {
+    int ti;
+    int tj;
+    tile_coords(t, ti, tj);
+    const double* tile = a.k + static_cast<long long>(t) * kTile * kTile;
+    const int j = tj * kTile + lane;
+    const int i = ti * kTile + lane;
+    const double uj = j < n ? (Abs ? 1.0 : __ldcg(u + j)) : 0.0;
+    const double ui = i < n ? (Abs ? 1.0 : __ldcg(u + i)) : 0.0;
+    // Lane l holds column l: its column sum directly, its share of every row
+    // sum in p, which reduce_scatter turns into the sum of row l.
+    double p[kTile];
+    double col = 0.0;
+#pragma unroll
+    for (int r = 0; r < kTile; ++r) {
+      double k = __ldg(tile + r * kTile + lane);
+      if (Abs) k = fabs(k);
+      col += k * __shfl_sync(kAllLanes, ui, r);
+      p[r] = k * uj;
+    }
+    const double mine = reduce_scatter(p);
+    double* out = a.tile_partials + static_cast<long long>(t) * 2 * kTile;
+    out[lane] = mine;
+    out[kTile + lane] = ti != tj ? col : 0.0;
+  }
+  double sum = 0.0;
+  if (lane == 0) {
+    for (int i = gw; i < n; i += tw) sum += Abs ? 1.0 : __ldcg(u + i);
+  }
+  publish(a.partials, kSlotSum, block_reduce(sum, shared, false));
+  grid.sync();
+  return grid_reduce(a.partials, kSlotSum, shared, false);
+}
+
+// Second step: (K u)_i for row i in lane 0 (``border`` from prepare).
+template <bool Packed, bool Abs>
+__device__ double row_apply(const MinresArgs& a, const double* u, int i, double border) {
+  const int np = a.np;
+  const int lane = lane_id();
+  if (!Packed) {
+    const double* row = a.k + static_cast<long long>(i) * np;
+    double acc = 0.0;
+    for (int j = lane; j < np; j += kWarpSize) acc += Abs ? fabs(__ldg(row + j)) : __ldg(row + j) * __ldcg(u + j);
+    return warp_sum(acc);
+  }
+  const int n = np - 1;
+  if (i == n) return border;
+  const int ti = i / kTile;
+  const int slot = i % kTile;
+  const int rows = (n + kTile - 1) / kTile;
   double acc = 0.0;
-  for (int j = lane_id(); j < np; j += kWarpSize) acc += __ldg(row + j) * __ldcg(vec + j);
-  return warp_sum(acc);
+  for (int k = lane; k < rows; k += kWarpSize) {
+    acc += k <= ti ? __ldcg(a.tile_partials + tile_index(ti, k) * 2 * kTile + slot)
+                   : __ldcg(a.tile_partials + tile_index(k, ti) * 2 * kTile + kTile + slot);
+  }
+  acc = warp_sum(acc);
+  return acc + (Abs ? 1.0 : __ldcg(u + n));
+}
+
+// K_ii (i < n).
+template <bool Packed>
+__device__ __forceinline__ double diagonal(const MinresArgs& a, int i) {
+  if (!Packed) return a.k[static_cast<long long>(i) * a.np + i];
+  const int slot = i % kTile;
+  return a.k[tile_index(i / kTile, i / kTile) * kTile * kTile + slot * kTile + slot];
 }
 
 struct Vectors {
@@ -213,6 +327,9 @@ __device__ Vectors vectors(const MinresArgs& a) {
   return {base,          base + np,     base + 2 * np, base + 3 * np, base + 4 * np,
           base + 5 * np, base + 6 * np, base + 7 * np, base + 8 * np};
 }
+
+// The solver state lives in shared memory: every thread reads it, thread 0
+// writes it between block barriers. Each block holds an identical copy.
 
 // (Re)start the Lanczos process from the residual in vec.r (own rows).
 __device__ void begin(MinresState& st, const MinresArgs& a, const Vectors& vec, cg::grid_group& grid,
@@ -239,62 +356,62 @@ __device__ void begin(MinresState& st, const MinresArgs& a, const Vectors& vec, 
   publish(a.partials, kSlotBeta1, block_reduce(part, shared, false));
   grid.sync();
   const double beta_sq = grid_reduce(a.partials, kSlotBeta1, shared, false);
-  st.beta1 = sqrt(beta_sq);
-  st.beta = st.beta1;
-  st.oldb = 0.0;
-  st.dbar = 0.0;
-  st.epsln = 0.0;
-  st.phibar = st.beta1;
-  st.cs = -1.0;
-  st.sn = 0.0;
-  st.gmax = 0.0;
-  st.gmin = DBL_MAX;
-  st.inner = 0;
-  if (!isfinite(beta_sq)) {
-    st.status = 1;
-    st.phase = 2;
-  } else if (beta_sq == 0.0) {
-    st.eta = 0.0;  // x solves the system exactly
-    st.status = 0;
-    st.phase = 2;
-  } else {
-    st.phase = 1;
+  if (threadIdx.x == 0) {
+    st.beta1 = sqrt(beta_sq);
+    st.beta = st.beta1;
+    st.oldb = 0.0;
+    st.dbar = 0.0;
+    st.epsln = 0.0;
+    st.phibar = st.beta1;
+    st.cs = -1.0;
+    st.sn = 0.0;
+    st.gmax = 0.0;
+    st.gmin = DBL_MAX;
+    st.inner = 0;
+    if (!isfinite(beta_sq)) {
+      st.status = 1;
+      st.phase = 2;
+    } else if (beta_sq == 0.0) {
+      st.eta = 0.0;  // x solves the system exactly
+      st.status = 0;
+      st.phase = 2;
+    } else {
+      st.phase = 1;
+    }
   }
+  __syncthreads();
 }
 
-__global__ void __launch_bounds__(kSolverThreads) minres_kernel(MinresArgs a, int budget) {
+// One resident block per SM: the packed tile pass keeps 32 row products per
+// lane in registers, and eight warps already keep enough loads in flight.
+template <bool Packed>
+__global__ void __launch_bounds__(kSolverThreads, 1) minres_kernel(MinresArgs a, int budget) {
   cg::grid_group grid = cg::this_grid();
   __shared__ double shared[kSolverWarps + 1];
+  __shared__ MinresState st;
   const int np = a.np;
   const int n = np - 1;
   const int lane = lane_id();
   const int gw = static_cast<int>(blockIdx.x) * kSolverWarps + static_cast<int>(threadIdx.x) / kWarpSize;
   const int tw = static_cast<int>(gridDim.x) * kSolverWarps;
   const Vectors vec = vectors(a);
-  MinresState st = *a.state;
+  if (threadIdx.x == 0) st = *a.state;
+  __syncthreads();
 
   if (st.phase == 0) {
     // Norms of K and b, the diagonal, and the initial residual.
     double norm = 0.0;
     double diag = 0.0;
     double rhs = 0.0;
+    const double abs_border = prepare<Packed, true>(a, nullptr, grid, shared);
     for (int i = gw; i < np; i += tw) {
-      const double* row = a.k + static_cast<long long>(i) * np;
-      double abs_sum = 0.0;
-      double kx = 0.0;
-      for (int j = lane; j < np; j += kWarpSize) {
-        const double kij = __ldg(row + j);
-        abs_sum += fabs(kij);
-        if (a.warm) kx += kij * __ldcg(a.x + j);
-      }
-      abs_sum = warp_sum(abs_sum);
-      kx = warp_sum(kx);
+      const double abs_sum = row_apply<Packed, true>(a, nullptr, i, abs_border);
       if (lane == 0) {
         const double bi = a.b[i];
         norm = fmax(norm, abs_sum);
         rhs = fmax(rhs, fabs(bi));
-        if (i < n) diag = fmax(diag, fabs(row[i]));
-        vec.r[i] = a.warm ? bi - kx : bi;
+        if (i < n) diag = fmax(diag, fabs(diagonal<Packed>(a, i)));
+        vec.r[i] = bi;
         if (!a.warm) a.x[i] = 0.0;
       }
     }
@@ -302,46 +419,68 @@ __global__ void __launch_bounds__(kSolverThreads) minres_kernel(MinresArgs a, in
     publish(a.partials, kSlotDiag, block_reduce(diag, shared, true));
     publish(a.partials, kSlotRhs, block_reduce(rhs, shared, true));
     grid.sync();
-    st.knorm = grid_reduce(a.partials, kSlotNorm, shared, true);
-    st.dmax = grid_reduce(a.partials, kSlotDiag, shared, true);
-    st.bnorm = grid_reduce(a.partials, kSlotRhs, shared, true);
-    st.itn = 0;
-    st.restarts = 0;
-    st.status = 0;
-    st.eta = 0.0;
+    const double knorm = grid_reduce(a.partials, kSlotNorm, shared, true);
+    const double dmax = grid_reduce(a.partials, kSlotDiag, shared, true);
+    const double bnorm = grid_reduce(a.partials, kSlotRhs, shared, true);
+    if (threadIdx.x == 0) {
+      st.knorm = knorm;
+      st.dmax = dmax;
+      st.bnorm = bnorm;
+      st.itn = 0;
+      st.restarts = 0;
+      st.status = 0;
+      st.eta = 0.0;
+    }
+    if (a.warm) {
+      const double border = prepare<Packed, false>(a, a.x, grid, shared);
+      for (int i = gw; i < np; i += tw) {
+        const double kx = row_apply<Packed, false>(a, a.x, i, border);
+        if (lane == 0) vec.r[i] = a.b[i] - kx;
+      }
+    }
     // Jacobi preconditioner; the border gets the Schur estimate sum_i 1/m_i.
-    const double floor = st.dmax > 0.0 ? kPreconditionerFloor * st.dmax : 1.0;
+    const double floor = dmax > 0.0 ? kPreconditionerFloor * dmax : 1.0;
     double border = 0.0;
     if (lane == 0) {
       for (int i = gw; i < n; i += tw) {
-        const double mi = fmax(fabs(a.k[static_cast<long long>(i) * np + i]), floor);
+        const double mi = fmax(fabs(diagonal<Packed>(a, i)), floor);
         vec.m[i] = mi;
         border += 1.0 / mi;
       }
     }
     publish(a.partials, kSlotBorder, block_reduce(border, shared, false));
     grid.sync();
-    st.mborder = n > 0 ? grid_reduce(a.partials, kSlotBorder, shared, false) : 1.0;
+    const double mborder = n > 0 ? grid_reduce(a.partials, kSlotBorder, shared, false) : 1.0;
     // The scale of the inner tolerance, |b|_M^-1 (beta1 of a cold start).
     double scale = 0.0;
     if (lane == 0) {
       for (int i = gw; i < np; i += tw) {
         const double bi = a.b[i];
-        scale += bi * bi / (i < n ? vec.m[i] : st.mborder);
+        scale += bi * bi / (i < n ? vec.m[i] : mborder);
       }
     }
     publish(a.partials, kSlotScale, block_reduce(scale, shared, false));
     grid.sync();
-    st.bscale = sqrt(grid_reduce(a.partials, kSlotScale, shared, false));
-    if (!isfinite(st.knorm) || !isfinite(st.bnorm) || !isfinite(st.bscale)) {
-      st.status = 1;
-      st.phase = 2;
-    } else if (st.bnorm == 0.0) {
+    const double bscale = sqrt(grid_reduce(a.partials, kSlotScale, shared, false));
+    if (threadIdx.x == 0) {
+      st.mborder = mborder;
+      st.bscale = bscale;
+    }
+    __syncthreads();
+    if (!isfinite(knorm) || !isfinite(bnorm) || !isfinite(bscale)) {
+      if (threadIdx.x == 0) {
+        st.status = 1;
+        st.phase = 2;
+      }
+      __syncthreads();
+    } else if (bnorm == 0.0) {
       // b = 0: x = 0 is exact (also discards a warm-start guess).
       if (lane == 0) {
         for (int i = gw; i < np; i += tw) a.x[i] = 0.0;
       }
-      st.phase = 2;
+      __syncthreads();
+      if (threadIdx.x == 0) st.phase = 2;
+      __syncthreads();
     } else {
       begin(st, a, vec, grid, shared);
     }
@@ -350,13 +489,15 @@ __global__ void __launch_bounds__(kSolverThreads) minres_kernel(MinresArgs a, in
   for (int done = 0; st.phase == 1 && done < budget; ++done) {
     // y = K v - (beta / oldb) r1 with v = z / beta; alpha = v . y.
     const double s = 1.0 / st.beta;
-    const double back = st.inner > 0 ? st.beta / st.oldb : 0.0;
+    const bool continuing = st.inner > 0;
+    const double back = continuing ? st.beta / st.oldb : 0.0;
     double part = 0.0;
+    const double border = prepare<Packed, false>(a, vec.z, grid, shared);
     for (int i = gw; i < np; i += tw) {
-      const double kz = row_times(a.k + static_cast<long long>(i) * np, vec.z, np);
+      const double kz = row_apply<Packed, false>(a, vec.z, i, border);
       if (lane == 0) {
         double yi = s * kz;
-        if (st.inner > 0) yi -= back * vec.r1[i];
+        if (continuing) yi -= back * vec.r1[i];
         const double vi = s * vec.z[i];
         vec.v[i] = vi;
         vec.y[i] = yi;
@@ -384,27 +525,24 @@ __global__ void __launch_bounds__(kSolverThreads) minres_kernel(MinresArgs a, in
     grid.sync();
     const double beta_sq = grid_reduce(a.partials, kSlotBeta, shared, false);
     if (!isfinite(beta_sq) || !isfinite(alfa)) {
-      st.status = 1;
-      st.phase = 2;
+      if (threadIdx.x == 0) {
+        st.status = 1;
+        st.phase = 2;
+      }
+      __syncthreads();
       break;
     }
-    st.oldb = st.beta;
-    st.beta = sqrt(beta_sq);
 
     // Plane rotation of the tridiagonal QR and the solution update.
+    const double beta = sqrt(beta_sq);
     const double oldeps = st.epsln;
     const double delta = st.cs * st.dbar + st.sn * alfa;
     const double gbar = st.sn * st.dbar - st.cs * alfa;
-    st.epsln = st.sn * st.beta;
-    st.dbar = -st.cs * st.beta;
-    const double gamma = fmax(hypot(gbar, st.beta), DBL_EPSILON);
-    st.cs = gbar / gamma;
-    st.sn = st.beta / gamma;
-    const double phi = st.cs * st.phibar;
-    st.phibar = st.sn * st.phibar;
+    const double gamma = fmax(hypot(gbar, beta), DBL_EPSILON);
+    const double cs = gbar / gamma;
+    const double sn = beta / gamma;
+    const double phi = cs * st.phibar;
     const double denom = 1.0 / gamma;
-    st.gmax = fmax(st.gmax, gamma);
-    st.gmin = fmin(st.gmin, gamma);
     if (lane == 0) {
       for (int i = gw; i < np; i += tw) {
         const double w1 = vec.w2[i];
@@ -415,13 +553,26 @@ __global__ void __launch_bounds__(kSolverThreads) minres_kernel(MinresArgs a, in
         a.x[i] += phi * wi;
       }
     }
-    st.itn += 1;
-    st.inner += 1;
-    if (st.gmax > kSingularCondition * st.gmin) {
-      st.status = 1;
-      st.phase = 2;
-      break;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+      st.epsln = st.sn * beta;
+      st.dbar = -st.cs * beta;
+      st.oldb = st.beta;
+      st.beta = beta;
+      st.cs = cs;
+      st.sn = sn;
+      st.phibar = sn * st.phibar;
+      st.gmax = fmax(st.gmax, gamma);
+      st.gmin = fmin(st.gmin, gamma);
+      st.itn += 1;
+      st.inner += 1;
+      if (st.gmax > kSingularCondition * st.gmin) {
+        st.status = 1;
+        st.phase = 2;
+      }
     }
+    __syncthreads();
+    if (st.phase == 2) break;
     const bool exhausted = st.itn >= a.max_iterations;
     if (!(st.phibar <= kInnerTolerance * st.bscale) && st.beta > 0.0 && !exhausted) continue;
 
@@ -429,8 +580,9 @@ __global__ void __launch_bounds__(kSolverThreads) minres_kernel(MinresArgs a, in
     grid.sync();
     double rmax = 0.0;
     double xmax = 0.0;
+    const double xborder = prepare<Packed, false>(a, a.x, grid, shared);
     for (int i = gw; i < np; i += tw) {
-      const double kx = row_times(a.k + static_cast<long long>(i) * np, a.x, np);
+      const double kx = row_apply<Packed, false>(a, a.x, i, xborder);
       if (lane == 0) {
         const double ri = a.b[i] - kx;
         vec.r[i] = ri;
@@ -443,20 +595,25 @@ __global__ void __launch_bounds__(kSolverThreads) minres_kernel(MinresArgs a, in
     grid.sync();
     const double residual = grid_reduce(a.partials, kSlotNorm, shared, true);
     const double scale = st.knorm * grid_reduce(a.partials, kSlotX, shared, true) + st.bnorm;
-    st.eta = residual > 0.0 ? residual / scale : 0.0;
-    if (!isfinite(st.eta)) {
-      st.status = 1;
-      st.phase = 2;
-    } else if (st.eta <= kRefineTarget) {
-      st.status = 0;
-      st.phase = 2;
-    } else if (st.restarts < kMaxRestarts && !exhausted) {
-      st.restarts += 1;
-      begin(st, a, vec, grid, shared);
-    } else {
-      st.status = st.eta <= a.tolerance ? 0 : 2;
-      st.phase = 2;
+    const double eta = residual > 0.0 ? residual / scale : 0.0;
+    const bool restart = isfinite(eta) && eta > kRefineTarget && st.restarts < kMaxRestarts && !exhausted;
+    if (threadIdx.x == 0) {
+      st.eta = eta;
+      if (!isfinite(eta)) {
+        st.status = 1;
+        st.phase = 2;
+      } else if (eta <= kRefineTarget) {
+        st.status = 0;
+        st.phase = 2;
+      } else if (restart) {
+        st.restarts += 1;
+      } else {
+        st.status = eta <= a.tolerance ? 0 : 2;
+        st.phase = 2;
+      }
     }
+    __syncthreads();
+    if (restart) begin(st, a, vec, grid, shared);
   }
   if (blockIdx.x == 0 && threadIdx.x == 0) *a.state = st;
 }
@@ -491,7 +648,10 @@ int minres_blocks(int n, int device) {
   int sms = 0;
   VF_CUDA_CHECK(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device));
   int per_sm = 0;
-  VF_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, minres_kernel, kSolverThreads, 0));
+  VF_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, minres_kernel<true>, kSolverThreads, 0));
+  int dense_per_sm = 0;
+  VF_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&dense_per_sm, minres_kernel<false>, kSolverThreads, 0));
+  per_sm = std::min(per_sm, dense_per_sm);
   const int rows = (n + 1 + kSolverWarps - 1) / kSolverWarps;
   return std::max(1, std::min(sms * per_sm, rows));
 }
@@ -499,8 +659,10 @@ int minres_blocks(int n, int device) {
 void launch_minres(const MinresArgs& args, int blocks, int iterations, cudaStream_t stream) {
   MinresArgs copy = args;
   void* params[] = {&copy, &iterations};
-  VF_CUDA_CHECK(cudaLaunchCooperativeKernel(reinterpret_cast<void*>(minres_kernel), dim3(static_cast<unsigned>(blocks)),
-                                            dim3(kSolverThreads), params, 0, stream));
+  void* kernel = args.tiles > 0 ? reinterpret_cast<void*>(minres_kernel<true>)
+                                : reinterpret_cast<void*>(minres_kernel<false>);
+  VF_CUDA_CHECK(cudaLaunchCooperativeKernel(kernel, dim3(static_cast<unsigned>(blocks)), dim3(kSolverThreads), params, 0,
+                                            stream));
   VF_LAUNCH_CHECK(stream);
 }
 
