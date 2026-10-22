@@ -25,36 +25,54 @@ Usage::
 
 from __future__ import annotations
 
-import argparse
 import hashlib
-import json
 import math
-import os
 import re
 import struct
 import sys
-import tomllib
-import urllib.request
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from datagen_common import (
+    DTYPE_F64,
+    DTYPE_U8,
+    HEADER_BYTES,
+    REAL_LITERAL,
+    SECTION_ALIGN,
+    Constants,
+    Generated,
+    GenerationError,
+    Section,
+    SourcePin,
+    SourceReader,
+    build_container,
+    check_convention_lines,
+    dumps,
+    find_one,
+    fortran_statements,
+    int_parameter,
+    manifest_outputs,
+    manifest_sources,
+    pack_f64,
+    parse_constants,
+    parse_int_list,
+    parse_real_list,
+    run_cli,
+    squash,
+)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOURCES_TOML = REPO_ROOT / "data" / "sources.toml"
-OUTPUT_DIR = REPO_ROOT / "src" / "vanderfast" / "data"
 
 GENERATOR_VERSION = 1
 FORMAT_VERSION = 1
-HEADER_BYTES = 512
-SECTION_ALIGN = 64
 BYTE_ORDER_MARK = 0x01020304
-SOURCE_ID_BYTES = 64
 FLAG_RADII_D3_SCALED = 1 << 0
 FLAG_ATOMIC_UNITS = 1 << 1
-
-DTYPE_U8 = 1
-DTYPE_F64 = 2
 
 SECTION_NREF = 1
 SECTION_REF_CN = 2
@@ -123,278 +141,6 @@ CONVENTION_LINES: dict[str, list[tuple[str, str]]] = {
 }
 
 
-class GenerationError(RuntimeError):
-    """Raised when an upstream source does not match the strict expectations."""
-
-
-# --------------------------------------------------------------------------
-# Source access
-# --------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class SourcePin:
-    """One pinned upstream repository."""
-
-    name: str
-    repository: str
-    commit: str
-    files: dict[str, str]
-    meta: dict[str, Any]
-
-
-def load_pins(path: Path = SOURCES_TOML) -> dict[str, SourcePin]:
-    """Read the pinned sources from ``data/sources.toml``."""
-    with path.open("rb") as handle:
-        document = tomllib.load(handle)
-    pins: dict[str, SourcePin] = {}
-    for name, entry in document["sources"].items():
-        meta = {k: v for k, v in entry.items() if k != "files"}
-        pins[name] = SourcePin(
-            name=name,
-            repository=entry["repository"],
-            commit=entry["commit"],
-            files=dict(entry["files"]),
-            meta=meta,
-        )
-    return pins
-
-
-def _raw_url(pin: SourcePin, relpath: str) -> str:
-    owner_repo = pin.repository.removeprefix("https://github.com/")
-    return f"https://raw.githubusercontent.com/{owner_repo}/{pin.commit}/{relpath}"
-
-
-def _default_cache() -> Path:
-    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base) / "vanderfast" / "upstream"
-
-
-class SourceReader:
-    """Return verified bytes of pinned upstream files."""
-
-    def __init__(
-        self,
-        pins: dict[str, SourcePin],
-        source_dirs: dict[str, Path],
-        cache: Path,
-    ) -> None:
-        """Create a reader using local checkouts first, then a download cache."""
-        self._pins = pins
-        self._source_dirs = source_dirs
-        self._cache = cache
-
-    def read(self, source: str, relpath: str) -> bytes:
-        """Return the bytes of ``relpath`` after verifying its pinned sha256."""
-        pin = self._pins[source]
-        expected = pin.files[relpath]
-        if source in self._source_dirs:
-            data = (self._source_dirs[source] / relpath).read_bytes()
-        else:
-            cached = self._cache / expected
-            if cached.is_file():
-                data = cached.read_bytes()
-            else:
-                url = _raw_url(pin, relpath)
-                if not url.startswith("https://raw.githubusercontent.com/"):
-                    msg = f"refusing to fetch non-GitHub URL {url}"
-                    raise GenerationError(msg)
-                with urllib.request.urlopen(url, timeout=60) as response:  # noqa: S310
-                    data = response.read()
-        digest = hashlib.sha256(data).hexdigest()
-        if digest != expected:
-            msg = f"{source}:{relpath} sha256 {digest} does not match pinned {expected}"
-            raise GenerationError(msg)
-        if source not in self._source_dirs:
-            self._cache.mkdir(parents=True, exist_ok=True)
-            (self._cache / expected).write_bytes(data)
-        return data
-
-    def text(self, source: str, relpath: str) -> str:
-        """Return a verified file decoded as UTF-8."""
-        return self.read(source, relpath).decode("utf-8")
-
-
-# --------------------------------------------------------------------------
-# Fortran lexing
-# --------------------------------------------------------------------------
-
-
-def _strip_comment(line: str) -> str:
-    """Remove a trailing ``!`` comment that is not inside a string literal."""
-    quote: str | None = None
-    for index, char in enumerate(line):
-        if quote is not None:
-            if char == quote:
-                quote = None
-        elif char in {'"', "'"}:
-            quote = char
-        elif char == "!":
-            return line[:index]
-    return line
-
-
-def _split_semicolons(statement: str) -> list[str]:
-    parts: list[str] = []
-    quote: str | None = None
-    start = 0
-    for index, char in enumerate(statement):
-        if quote is not None:
-            if char == quote:
-                quote = None
-        elif char in {'"', "'"}:
-            quote = char
-        elif char == ";":
-            parts.append(statement[start:index])
-            start = index + 1
-    parts.append(statement[start:])
-    return [part.strip() for part in parts if part.strip()]
-
-
-def fortran_statements(source: str) -> list[str]:
-    """Split free-form Fortran into comment-free, continuation-joined statements."""
-    statements: list[str] = []
-    pending = ""
-    for raw in source.splitlines():
-        line = _strip_comment(raw).rstrip()
-        stripped = line.lstrip()
-        if pending and stripped.startswith("&"):
-            stripped = stripped[1:]
-        if not pending:
-            stripped = line.strip()
-        if stripped.endswith("&"):
-            pending += stripped[:-1] + " "
-            continue
-        full = (pending + stripped).strip()
-        pending = ""
-        if full:
-            statements.extend(_split_semicolons(full))
-    if pending.strip():
-        msg = "unterminated continuation at end of file"
-        raise GenerationError(msg)
-    return [re.sub(r"\s+", " ", statement) for statement in statements]
-
-
-def _squash(text: str) -> str:
-    return re.sub(r"\s+", "", text)
-
-
-_REAL_LITERAL = re.compile(r"[+-]?(\d+\.\d*|\.\d+|\d+)([eEdD][+-]?\d+)?_wp")
-_INT_LITERAL = re.compile(r"[+-]?\d+")
-
-
-def parse_real_list(body: str) -> list[float]:
-    """Parse a comma-separated list of ``_wp`` real literals strictly."""
-    values: list[float] = []
-    for token in (part.strip() for part in body.split(",")):
-        if not _REAL_LITERAL.fullmatch(token):
-            msg = f"unexpected token in real array: {token!r}"
-            raise GenerationError(msg)
-        mantissa = token.removesuffix("_wp").replace("d", "e").replace("D", "e")
-        values.append(float(mantissa))
-    return values
-
-
-def parse_int_list(body: str) -> list[int]:
-    """Parse a comma-separated list of integer literals strictly."""
-    values: list[int] = []
-    for token in (part.strip() for part in body.split(",")):
-        if not _INT_LITERAL.fullmatch(token):
-            msg = f"unexpected token in integer array: {token!r}"
-            raise GenerationError(msg)
-        values.append(int(token))
-    return values
-
-
-def _find_one(statements: Iterable[str], pattern: str) -> re.Match[str]:
-    regex = re.compile(pattern)
-    matches = [m for m in (regex.fullmatch(s) for s in statements) if m]
-    if len(matches) != 1:
-        msg = f"expected exactly one statement matching {pattern!r}, found {len(matches)}"
-        raise GenerationError(msg)
-    return matches[0]
-
-
-def _int_parameter(statements: Sequence[str], name: str) -> int:
-    match = _find_one(statements, rf"integer, parameter :: {name} = (\d+)")
-    return int(match.group(1))
-
-
-# --------------------------------------------------------------------------
-# mctc-lib unit constants
-# --------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Constants:
-    """Unit constants evaluated exactly as mctc-lib evaluates them."""
-
-    aatoau: float
-    autoaa: float
-    pi: float
-    codata: dict[str, float]
-
-
-def parse_constants(reader: SourceReader) -> Constants:
-    """Evaluate mctc-lib's ``aatoau`` from its CODATA 2018 definition."""
-    codata_statements = fortran_statements(reader.text("mctc-lib", "src/mctc/io/codata2018.f90"))
-    wanted = {
-        "planck_constant": "h",
-        "speed_of_light_in_vacuum": "c",
-        "fine_structure_constant": "alpha",
-        "electron_mass": "me",
-    }
-    codata: dict[str, float] = {}
-    pattern = re.compile(
-        r"real\(wp\), parameter, public :: (\w+) = (" + _REAL_LITERAL.pattern + ")",
-    )
-    for statement in codata_statements:
-        match = pattern.fullmatch(statement)
-        if match and match.group(1).lower() in wanted:
-            key = wanted[match.group(1).lower()]
-            if key in codata:
-                msg = f"duplicate CODATA constant {match.group(1)}"
-                raise GenerationError(msg)
-            codata[key] = parse_real_list(match.group(2))[0]
-    if set(codata) != set(wanted.values()):
-        msg = f"missing CODATA constants: {set(wanted.values()) - set(codata)}"
-        raise GenerationError(msg)
-
-    constant_statements = fortran_statements(reader.text("mctc-lib", "src/mctc/io/constants.f90"))
-    pi_match = _find_one(
-        constant_statements,
-        r"real\(wp\), parameter :: pi = (" + _REAL_LITERAL.pattern + ")",
-    )
-    pi = parse_real_list(pi_match.group(1))[0]
-    for field, name in [
-        ("h", "planck_constant"),
-        ("c", "speed_of_light_in_vacuum"),
-        ("alpha", "fine_structure_constant"),
-        ("me", "electron_mass"),
-    ]:
-        _find_one(constant_statements, rf"real\(wp\) :: {field} = {name}")
-
-    convert = {
-        _squash(s) for s in fortran_statements(reader.text("mctc-lib", "src/mctc/io/convert.f90"))
-    }
-    required = [
-        "real(wp),parameter::hbar=codata%h/(2.0_wp*pi)",
-        "real(wp),parameter::bohr=hbar/(codata%me*codata%c*codata%alpha)",
-        "real(wp),public,parameter::autoaa=bohr*1e10_wp",
-        "real(wp),public,parameter::aatoau=1.0_wp/autoaa",
-    ]
-    for line in required:
-        if line not in convert:
-            msg = f"mctc convert.f90 no longer contains {line!r}"
-            raise GenerationError(msg)
-
-    hbar = codata["h"] / (2.0 * pi)
-    bohr = hbar / (codata["me"] * codata["c"] * codata["alpha"])
-    autoaa = bohr * 1e10
-    aatoau = 1.0 / autoaa
-    return Constants(aatoau=aatoau, autoaa=autoaa, pi=pi, codata=codata)
-
-
 # --------------------------------------------------------------------------
 # Tables
 # --------------------------------------------------------------------------
@@ -415,14 +161,14 @@ class Tables:
 def parse_reference(reader: SourceReader) -> tuple[list[int], list[float], list[float]]:
     """Parse reference counts, reference CNs, and the padded C6 table."""
     statements = fortran_statements(reader.text("simple-dftd3", "src/dftd3/reference.f90"))
-    if _int_parameter(statements, "max_elem") != Z_MAX:
+    if int_parameter(statements, "max_elem") != Z_MAX:
         msg = "reference.f90 max_elem changed"
         raise GenerationError(msg)
-    if _int_parameter(statements, "max_ref") != MAX_REF:
+    if int_parameter(statements, "max_ref") != MAX_REF:
         msg = "reference.f90 max_ref changed"
         raise GenerationError(msg)
 
-    nref_match = _find_one(
+    nref_match = find_one(
         statements,
         r"integer, parameter :: number_of_references\(max_elem\) = \[(.*)\]",
     )
@@ -431,7 +177,7 @@ def parse_reference(reader: SourceReader) -> tuple[list[int], list[float], list[
         msg = f"expected {Z_MAX} reference counts, got {len(nref)}"
         raise GenerationError(msg)
 
-    cn_match = _find_one(
+    cn_match = find_one(
         statements,
         r"real\(wp\), parameter :: reference_cn\(max_ref, max_elem\) = "
         r"reshape\(\[(.*)\], ?\[max_ref, max_elem\]\)",
@@ -465,8 +211,8 @@ def parse_reference(reader: SourceReader) -> tuple[list[int], list[float], list[
 def parse_r4r2(reader: SourceReader) -> list[float]:
     """Return ``sqrt_z_r4_over_r2`` evaluated in upstream operation order."""
     statements = fortran_statements(reader.text("simple-dftd3", "src/dftd3/data/r4r2.f90"))
-    max_elem = _int_parameter(statements, "max_elem")
-    match = _find_one(
+    max_elem = int_parameter(statements, "max_elem")
+    match = find_one(
         statements,
         r"real\(wp\), parameter :: r4_over_r2\(max_elem\) = \[(.*)\]",
     )
@@ -474,11 +220,11 @@ def parse_r4r2(reader: SourceReader) -> list[float]:
     if len(r4_over_r2) != max_elem:
         msg = "r4_over_r2 length mismatch"
         raise GenerationError(msg)
-    expr = _find_one(
+    expr = find_one(
         statements,
         r"real\(wp\), parameter :: sqrt_z_r4_over_r2\(max_elem\) = (.*)",
     )
-    if _squash(expr.group(1)) != SQRT_Z_EXPR:
+    if squash(expr.group(1)) != SQRT_Z_EXPR:
         msg = f"sqrt_z_r4_over_r2 expression changed: {expr.group(1)!r}"
         raise GenerationError(msg)
     return [
@@ -490,10 +236,10 @@ def parse_r4r2(reader: SourceReader) -> list[float]:
 def parse_vdwrad(reader: SourceReader, constants: Constants) -> list[float]:
     """Return the pairwise van der Waals radii in bohr."""
     statements = fortran_statements(reader.text("simple-dftd3", "src/dftd3/data/vdwrad.f90"))
-    if _int_parameter(statements, "max_elem") != Z_MAX:
+    if int_parameter(statements, "max_elem") != Z_MAX:
         msg = "vdwrad.f90 max_elem changed"
         raise GenerationError(msg)
-    match = _find_one(
+    match = find_one(
         statements,
         r"real\(wp\), parameter :: vdwrad\(max_elem\*\(1\+max_elem\)/2\) = "
         r"aatoau \* \[(.*)\]",
@@ -502,10 +248,10 @@ def parse_vdwrad(reader: SourceReader, constants: Constants) -> list[float]:
     if len(values) != N_PAIRS:
         msg = f"expected {N_PAIRS} vdW radii, got {len(values)}"
         raise GenerationError(msg)
-    lookup = _squash(
+    lookup = squash(
         "rad = vdwrad(num2 + num1*(num1-1)/2)",
     )
-    if lookup not in {_squash(s) for s in statements}:
+    if lookup not in {squash(s) for s in statements}:
         msg = "vdwrad.f90 pair indexing changed"
         raise GenerationError(msg)
     return [constants.aatoau * value for value in values]
@@ -514,8 +260,8 @@ def parse_vdwrad(reader: SourceReader, constants: Constants) -> list[float]:
 def parse_covrad(reader: SourceReader, constants: Constants) -> list[float]:
     """Return mctc-lib's ``covalent_rad_d3`` (already D3-scaled, bohr)."""
     statements = fortran_statements(reader.text("mctc-lib", "src/mctc/data/covrad.f90"))
-    max_elem = _int_parameter(statements, "max_elem")
-    match = _find_one(
+    max_elem = int_parameter(statements, "max_elem")
+    match = find_one(
         statements,
         r"real\(wp\), parameter :: covalent_rad_2009\(max_elem\) = aatoau \* \[(.*)\]",
     )
@@ -523,14 +269,14 @@ def parse_covrad(reader: SourceReader, constants: Constants) -> list[float]:
     if len(radii) != max_elem:
         msg = "covalent_rad_2009 length mismatch"
         raise GenerationError(msg)
-    scaled = _find_one(
+    scaled = find_one(
         statements,
         r"real\(wp\), parameter :: covalent_rad_d3\(max_elem\) = (.*)",
     )
-    if _squash(scaled.group(1)) != "4.0_wp/3.0_wp*covalent_rad_2009":
+    if squash(scaled.group(1)) != "4.0_wp/3.0_wp*covalent_rad_2009":
         msg = f"covalent_rad_d3 expression changed: {scaled.group(1)!r}"
         raise GenerationError(msg)
-    if "rad=covalent_rad_d3(num)" not in {_squash(s) for s in statements}:
+    if "rad=covalent_rad_d3(num)" not in {squash(s) for s in statements}:
         msg = "get_covalent_rad no longer returns covalent_rad_d3"
         raise GenerationError(msg)
     return [(4.0 / 3.0) * (constants.aatoau * value) for value in radii]
@@ -538,16 +284,9 @@ def parse_covrad(reader: SourceReader, constants: Constants) -> list[float]:
 
 def check_conventions(reader: SourceReader) -> dict[str, str]:
     """Assert convention-bearing source lines and return them by key."""
-    found: dict[str, str] = {}
-    for relpath, lines in CONVENTION_LINES.items():
-        statements = {_squash(s) for s in fortran_statements(reader.text("simple-dftd3", relpath))}
-        joined = "\n".join(statements)
-        for key, line in lines:
-            if _squash(line) not in joined:
-                msg = f"{relpath}: convention {key} not found: {line!r}"
-                raise GenerationError(msg)
-            found[key] = f"{relpath}: {line}"
-    return found
+    return check_convention_lines(
+        reader, {("simple-dftd3", relpath): lines for relpath, lines in CONVENTION_LINES.items()}
+    )
 
 
 # --------------------------------------------------------------------------
@@ -584,7 +323,7 @@ def _parse_defaults(statements: list[str]) -> dict[str, float]:
     start = statements.index("type :: d3_param")
     end = statements.index("end type d3_param", start)
     defaults: dict[str, float] = {}
-    default_re = re.compile(r"real\(wp\) :: (\w+) = (" + _REAL_LITERAL.pattern + ")")
+    default_re = re.compile(r"real\(wp\) :: (\w+) = (" + REAL_LITERAL.pattern + ")")
     for statement in statements[start + 1 : end]:
         match = default_re.fullmatch(statement)
         if not match:
@@ -690,10 +429,6 @@ def parse_methods(reader: SourceReader) -> MethodTable:
 # --------------------------------------------------------------------------
 # Packing
 # --------------------------------------------------------------------------
-
-
-def _pack_f64(values: Sequence[float]) -> bytes:
-    return struct.pack(f"<{len(values)}d", *values)
 
 
 def _pair_index(zi: int, zj: int) -> int:
@@ -848,48 +583,22 @@ def tied_maxima(packed: Packed) -> list[int]:
 
 def build_binary(packed: Packed, source_id: str) -> tuple[bytes, dict[str, str]]:
     """Serialise the packed tables into format v1 and return per-section hashes."""
-    sections: list[tuple[int, int, bytes, int, str]] = [
-        (SECTION_NREF, DTYPE_U8, bytes(packed.nref), len(packed.nref), "number_of_references"),
-        (
-            SECTION_REF_CN,
-            DTYPE_F64,
-            _pack_f64(packed.ref_cn),
-            len(packed.ref_cn),
-            "reference_cn",
+    sections = [
+        Section(
+            SECTION_NREF, DTYPE_U8, bytes(packed.nref), len(packed.nref), "number_of_references"
         ),
-        (
-            SECTION_RCOV_D3,
-            DTYPE_F64,
-            _pack_f64(packed.rcov),
-            len(packed.rcov),
-            "covalent_radii_d3",
+        Section(
+            SECTION_REF_CN, DTYPE_F64, pack_f64(packed.ref_cn), len(packed.ref_cn), "reference_cn"
         ),
-        (SECTION_R4R2, DTYPE_F64, _pack_f64(packed.r4r2), len(packed.r4r2), "r4r2"),
-        (SECTION_C6, DTYPE_F64, _pack_f64(packed.c6), len(packed.c6), "reference_c6_packed"),
-        (SECTION_RVDW, DTYPE_F64, _pack_f64(packed.rvdw), len(packed.rvdw), "vdw_radii"),
+        Section(
+            SECTION_RCOV_D3, DTYPE_F64, pack_f64(packed.rcov), len(packed.rcov), "covalent_radii_d3"
+        ),
+        Section(SECTION_R4R2, DTYPE_F64, pack_f64(packed.r4r2), len(packed.r4r2), "r4r2"),
+        Section(SECTION_C6, DTYPE_F64, pack_f64(packed.c6), len(packed.c6), "reference_c6_packed"),
+        Section(SECTION_RVDW, DTYPE_F64, pack_f64(packed.rvdw), len(packed.rvdw), "vdw_radii"),
     ]
-    body = bytearray()
-    table = bytearray()
-    offset = HEADER_BYTES
-    hashes: dict[str, str] = {}
-    for section_id, dtype, payload, count, name in sections:
-        table += struct.pack("<IIQQ", section_id, dtype, offset, count)
-        body += payload
-        offset += len(payload)
-        pad = (-offset) % SECTION_ALIGN
-        body += b"\0" * pad
-        offset += pad
-        hashes[name] = hashlib.sha256(payload).hexdigest()
-
-    source_bytes = source_id.encode("utf-8")
-    if len(source_bytes) >= SOURCE_ID_BYTES:
-        msg = "source id too long"
-        raise GenerationError(msg)
-    header = bytearray(HEADER_BYTES)
-    struct.pack_into(
+    prefix = struct.pack(
         "<8sIIIIIIIIQ",
-        header,
-        0,
         b"VDFD3TBL",
         FORMAT_VERSION,
         HEADER_BYTES,
@@ -901,21 +610,12 @@ def build_binary(packed: Packed, source_id: str) -> tuple[bytes, dict[str, str]]
         N_PAIRS,
         len(packed.c6),
     )
-    header[48 : 48 + len(source_bytes)] = source_bytes
-    struct.pack_into("<II", header, 112, len(sections), 0)
-    header[120 : 120 + len(table)] = table
-    return bytes(header) + bytes(body), hashes
+    return build_container(prefix, source_id, sections)
 
 
 # --------------------------------------------------------------------------
 # JSON outputs
 # --------------------------------------------------------------------------
-
-
-def dumps(document: Any) -> bytes:
-    """Serialise JSON deterministically."""
-    text = json.dumps(document, indent=1, sort_keys=True, ensure_ascii=False, allow_nan=False)
-    return (text + "\n").encode("utf-8")
 
 
 def build_methods(methods: MethodTable, pin: SourcePin) -> dict[str, Any]:
@@ -964,15 +664,6 @@ def build_manifest(
     methods_doc: dict[str, Any],
 ) -> dict[str, Any]:
     """Build the provenance manifest."""
-    sources = [
-        {
-            "name": pin.name,
-            **{k: v for k, v in pin.meta.items() if k != "repository"},
-            "repository": pin.repository,
-            "files": dict(sorted(pin.files.items())),
-        }
-        for pin in pins.values()
-    ]
     return {
         "schema": "vanderfast.reference-manifest/1",
         "generator": {"script": "tools/generate_d3_data.py", "version": GENERATOR_VERSION},
@@ -987,11 +678,8 @@ def build_manifest(
                 "arrays indexed by Z with slot 0 a sentinel"
             ),
         },
-        "sources": sources,
-        "outputs": {
-            name: {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
-            for name, data in sorted(outputs.items())
-        },
+        "sources": manifest_sources(pins),
+        "outputs": manifest_outputs(outputs),
         "tables": {name: {"sha256": digest} for name, digest in sorted(table_hashes.items())}
         | {"bj_parameters": {"sha256": hashlib.sha256(dumps(methods_doc)).hexdigest()}},
         "supported_atomic_numbers": {"min": 1, "max": Z_MAX},
@@ -1075,16 +763,16 @@ def verify_binary(libdir: Path, tables: Tables, constants: Constants) -> list[st
     if not dftd3 or not mctc:
         return [f"libs-dftd3/libmctc-lib not found in {libdir}"]
     checks: list[tuple[str, bytes, bytes]] = [
-        ("reference_cn", _pack_f64(tables.reference_cn_padded), dftd3),
-        ("sqrt_z_r4_over_r2", _pack_f64(tables.r4r2_all), dftd3),
-        ("vdwrad", _pack_f64(tables.vdwrad), dftd3),
-        ("covalent_rad_d3", _pack_f64(tables.rcov_d3_all), mctc),
-        ("aatoau", _pack_f64([constants.aatoau]), mctc),
+        ("reference_cn", pack_f64(tables.reference_cn_padded), dftd3),
+        ("sqrt_z_r4_over_r2", pack_f64(tables.r4r2_all), dftd3),
+        ("vdwrad", pack_f64(tables.vdwrad), dftd3),
+        ("covalent_rad_d3", pack_f64(tables.rcov_d3_all), mctc),
+        ("aatoau", pack_f64([constants.aatoau]), mctc),
     ]
     chunk = 2000
     for start in range(0, len(tables.c6_padded), chunk):
         values = tables.c6_padded[start : start + chunk]
-        checks.append((f"c6[{start + 1}:{start + len(values)}]", _pack_f64(values), dftd3))
+        checks.append((f"c6[{start + 1}:{start + len(values)}]", pack_f64(values), dftd3))
     return [name for name, needle, haystack in checks if needle not in haystack]
 
 
@@ -1093,9 +781,7 @@ def verify_binary(libdir: Path, tables: Tables, constants: Constants) -> list[st
 # --------------------------------------------------------------------------
 
 
-def generate(
-    reader: SourceReader, pins: dict[str, SourcePin]
-) -> tuple[dict[str, bytes], Tables, Constants]:
+def generate(reader: SourceReader, pins: dict[str, SourcePin]) -> Generated:
     """Run the full generation and return output bytes keyed by file name."""
     constants = parse_constants(reader)
     nref, reference_cn, c6 = parse_reference(reader)
@@ -1132,73 +818,19 @@ def generate(
         methods_doc=methods_doc,
     )
     outputs["manifest.json"] = dumps(manifest)
-    return outputs, tables, constants
-
-
-def _parse_source_dirs(values: Sequence[str]) -> dict[str, Path]:
-    result: dict[str, Path] = {}
-    for value in values:
-        name, sep, directory = value.partition("=")
-        if not sep:
-            msg = f"--source-dir expects NAME=DIR, got {value!r}"
-            raise SystemExit(msg)
-        result[name] = Path(directory).expanduser()
-    return result
+    return Generated(outputs, lambda libdir: verify_binary(libdir, tables, constants))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Command-line entry point."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--source-dir",
-        action="append",
-        default=[],
-        metavar="NAME=DIR",
-        help="read a pinned source from a local checkout (still hash-checked)",
+    return run_cli(
+        argv,
+        description=__doc__.splitlines()[0],
+        script="tools/generate_d3_data.py",
+        sources_toml=SOURCES_TOML,
+        generate=generate,
+        verify_help="search libs-dftd3/libmctc-lib in LIBDIR for the parsed arrays",
     )
-    parser.add_argument("--cache", type=Path, default=_default_cache())
-    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="require committed outputs to be byte-identical to a fresh generation",
-    )
-    parser.add_argument(
-        "--verify-binary",
-        type=Path,
-        metavar="LIBDIR",
-        help="search libs-dftd3/libmctc-lib in LIBDIR for the parsed arrays",
-    )
-    args = parser.parse_args(argv)
-
-    pins = load_pins()
-    reader = SourceReader(pins, _parse_source_dirs(args.source_dir), args.cache)
-    outputs, tables, constants = generate(reader, pins)
-
-    status = 0
-    if args.verify_binary is not None:
-        failures = verify_binary(args.verify_binary, tables, constants)
-        if failures:
-            print("binary verification failed for: " + ", ".join(failures), file=sys.stderr)
-            status = 1
-        else:
-            print("binary verification: all arrays found in the compiled reference")
-
-    if args.check:
-        for name, data in outputs.items():
-            path = args.output_dir / name
-            if not path.is_file() or path.read_bytes() != data:
-                print(f"{path} is out of date; run tools/generate_d3_data.py", file=sys.stderr)
-                status = 1
-        if status == 0:
-            print("generated data is up to date")
-        return status
-
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    for name, data in outputs.items():
-        (args.output_dir / name).write_bytes(data)
-        print(f"wrote {args.output_dir / name} ({len(data)} bytes)")
-    return status
 
 
 if __name__ == "__main__":
