@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "vanderfast"
-version = "1.1.1"
+version = "1.1.2"
 description = "GPU DFT-D3(BJ) and DFT-D4 dispersion energies, forces, and stress with an ASE calculator."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -117,23 +117,19 @@ manylinux-x86_64-image = "manylinux_2_28"
 build-verbosity = 1
 test-groups = ["test"]
 # Everything that needs no GPU; the release workflow's gpu-verify job runs the
-# CUDA suite on the same wheel.
+# CUDA suite on the same wheel. The reference-table hash test is deselected:
+# glibc 2.28's exp (the manylinux_2_28 image) is not correctly rounded for 3 of
+# its 365 inputs, so the bitwise hash cannot match there. CI and gpu-verify run
+# it on newer glibc.
 test-command = [
   "vanderfast verify-data",
   "vanderfast info",
-  "python -m pytest {project}/tests/unit {project}/tests/cuda --rootdir {project} -m 'not cuda' --require-native --no-cov -p no:cacheprovider",
+  "python -m pytest {project}/tests/unit {project}/tests/cuda --rootdir {project} -m 'not cuda' --require-native --no-cov -p no:cacheprovider --deselect tests/unit/test_oracle_d4.py::test_derived_reference_tables_match_the_manifest",
 ]
 inherit.audit-requires = "append"
 inherit.audit-command = "append"
 audit-requires = ["twine"]
 audit-command = "twine check --strict {wheel}"
-
-[tool.cibuildwheel.test-environment]
-# The CPU code-path pins from ci.yml. tests/unit/test_oracle_d4.py hashes NumPy
-# float64 exp results, and NumPy's AVX-512 exp differs from glibc's in the last
-# bit, so the hash only matches on hosted runners with AVX-512 disabled.
-OPENBLAS_CORETYPE = "Haswell"
-NPY_DISABLE_CPU_FEATURES = "X86_V4 AVX512_ICL AVX512_SPR"
 
 [tool.cibuildwheel.linux]
 # The same CUDA 13.1 nvcc and runtime as the conda lock (build_tools/), from

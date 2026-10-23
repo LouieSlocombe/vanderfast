@@ -7,27 +7,37 @@ a major version, the public Python API (`vanderfast`, `vanderfast.ase`), the
 command line, the bundled reference tables, and the numerical results they
 produce are stable.
 
-## [1.1.1] - 2026-10-23
+## [1.1.2] - 2026-10-23
 
-The first release published to PyPI. The v1.0.0 and v1.1.0 tags exist but
-their release workflows failed before publishing, so 1.1.1 carries the 1.0.0
-content plus the release-tooling fixes below and in 1.1.0; the code and the
-bundled tables are unchanged.
+The first release published to PyPI. The v1.0.0, v1.1.0, and v1.1.1 tags
+exist but their release workflows failed before publishing, so 1.1.2
+carries the 1.0.0 content plus the release-tooling fixes below and in
+1.1.0; the code and the bundled tables are unchanged.
 
 ### Fixed
 
-- The release workflow's wheel tests ran without the CPU code-path pins
-  that CI sets (`OPENBLAS_CORETYPE`, `NPY_DISABLE_CPU_FEATURES`). On hosted
-  runners with AVX-512, NumPy's AVX-512 float64 `exp` differs from glibc's
-  in the last bit, so `test_derived_reference_tables_match_the_manifest`
-  could not reproduce the manifest's hash of the reference polarizabilities
-  and the wheel job failed. `[tool.cibuildwheel]` now sets the same pins
-  for the wheel tests.
+- The release workflow's wheel job failed in
+  `test_derived_reference_tables_match_the_manifest`, which checks the
+  NumPy oracle's reference polarizabilities against the manifest hash bit
+  for bit. glibc 2.28, in the manylinux_2_28 build image, has an `exp` that
+  is not correctly rounded for 3 of the test's 365 inputs, so 61
+  polarizabilities differ by about 1e-15 relative and the hash cannot
+  match there. The wheel tests now deselect that test; CI and the release
+  workflow's GPU job still run it on newer glibc.
+- The wheel tests no longer set the CPU code-path pins added in 1.1.1;
+  they had no effect on this failure.
+
+## [1.1.1] - 2026-10-23
+
+Tagged on GitHub; not published to PyPI, because the wheel job of its
+release workflow still failed (fixed in 1.1.2). It set CPU code-path pins
+(`OPENBLAS_CORETYPE`, `NPY_DISABLE_CPU_FEATURES`) for the wheel tests on the
+mistaken diagnosis that NumPy's AVX-512 `exp` caused the 1.1.0 failure.
 
 ## [1.1.0] - 2026-10-23
 
 Tagged on GitHub; not published to PyPI, because the wheel job of its
-release workflow failed (fixed in 1.1.1). It carries the 1.0.0 content plus
+release workflow failed (fixed in 1.1.2). It carries the 1.0.0 content plus
 the release-tooling fixes below; the code and the bundled tables are
 unchanged.
 
@@ -121,6 +131,7 @@ First stable release (tagged on GitHub; not published to PyPI).
   compiled and checked for spills but have not run on hardware.
   See `docs/limitations.md` and the support matrix in `docs/build.md`.
 
+[1.1.2]: https://github.com/LouieSlocombe/vanderfast/releases/tag/v1.1.2
 [1.1.1]: https://github.com/LouieSlocombe/vanderfast/releases/tag/v1.1.1
 [1.1.0]: https://github.com/LouieSlocombe/vanderfast/releases/tag/v1.1.0
 [1.0.0]: https://github.com/LouieSlocombe/vanderfast/releases/tag/v1.0.0
