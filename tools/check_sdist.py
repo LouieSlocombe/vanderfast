@@ -28,6 +28,7 @@ REQUIRED = [
     "tests/fixtures/dftd4-4.2.0/molecules.jsonl",
 ]
 FORBIDDEN_PREFIXES = ["build/", "reports/", ".github/", "benchmarks/results/"]
+FORBIDDEN_SUFFIXES = [".pyc", ".pyo"]
 
 
 def main(argv: list[str]) -> int:
@@ -43,7 +44,11 @@ def main(argv: list[str]) -> int:
             print(f"missing from sdist: {required}", file=sys.stderr)
             status = 1
     for member in members:
-        if any(member.startswith(prefix) for prefix in FORBIDDEN_PREFIXES):
+        if (
+            any(member.startswith(prefix) for prefix in FORBIDDEN_PREFIXES)
+            or any(member.endswith(suffix) for suffix in FORBIDDEN_SUFFIXES)
+            or "__pycache__" in Path(member).parts
+        ):
             print(f"unexpected in sdist: {member}", file=sys.stderr)
             status = 1
     if status == 0:

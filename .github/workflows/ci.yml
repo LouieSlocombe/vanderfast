@@ -116,9 +116,10 @@ jobs:
       - name: Build the sdist, then the wheel from it for every release architecture
         run: python -m build --no-isolation
 
-      - name: Check the sdist contents, device code, and dynamic dependencies
+      - name: Check the sdist contents, package metadata, device code, and dynamic dependencies
         run: |
           python tools/check_sdist.py dist/*.tar.gz
+          python -m twine check --strict dist/*
           python tools/check_wheel.py dist/*.whl
 
       - name: Install the wheel and run the tests that need no GPU

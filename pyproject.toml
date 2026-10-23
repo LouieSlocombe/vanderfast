@@ -63,6 +63,7 @@ build = [
   "cmake>=4.1",
   "ninja>=1.11",
   "build>=1.2",
+  "twine>=6",
 ]
 dev = [
   { include-group = "test" },
@@ -80,12 +81,22 @@ wheel.packages = ["src/vanderfast"]
 install.components = ["python"]
 install.strip = true
 sdist.include = [
-  "src/vanderfast/data/*",
+  "src/vanderfast/data/*.bin",
+  "src/vanderfast/data/*.json",
   "data/**",
   "THIRD_PARTY_NOTICES.md",
   "tests/fixtures/**",
 ]
-sdist.exclude = [".github/", "benchmarks/results/", "build/", "reports/"]
+# sdist.include overrides .gitignore and sdist.exclude for whatever it matches,
+# so it names file types only; tools/check_sdist.py rejects bytecode caches.
+sdist.exclude = [
+  ".github/",
+  "benchmarks/results/",
+  "build/",
+  "reports/",
+  "__pycache__/",
+  "*.pyc",
+]
 messages.after-failure = """
 vanderfast native build failed. Activate the conda environment from
 build_tools/environment.yml (or set CUDACXX to a CUDA >= 13.0 nvcc).

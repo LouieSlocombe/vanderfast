@@ -3,7 +3,7 @@ PYTHON ?= python
 UPSTREAM ?=
 UPSTREAM_D4 ?=
 
-.PHONY: help env lock dev dev-cpu lint test test-gpu cpp-test sanitize stubtest wheel gpu-verify bench-smoke bench data data-check fixtures fixtures-check
+.PHONY: help env lock dev dev-cpu lint test test-gpu cpp-test sanitize stubtest sdist wheel gpu-verify bench-smoke bench data data-check fixtures fixtures-check
 
 help:
 	@grep -E '^[a-z-]+:' Makefile | cut -d: -f1
@@ -52,6 +52,11 @@ bench:
 
 stubtest:
 	cd /tmp && $(PYTHON) -m mypy.stubtest vanderfast._native --allowlist $(CURDIR)/tests/stubtest_allowlist.txt
+
+sdist:
+	$(PYTHON) -m build --sdist --no-isolation
+	$(PYTHON) tools/check_sdist.py dist/*.tar.gz
+	$(PYTHON) -m twine check --strict dist/*.tar.gz
 
 wheel:
 	VANDERFAST_RELEASE_BUILD=ON VANDERFAST_WERROR=ON \

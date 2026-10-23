@@ -37,3 +37,4 @@ dependencies:
   - ruff>=0.16.10
   - mypy>=2.4.0
   - prek>=0.5.5
+  - twine>=6

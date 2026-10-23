@@ -25,6 +25,7 @@ make dev-cpu    # pure-Python install (VANDERFAST_ENABLE_CUDA=OFF)
 make test-gpu   # full test suite; fails instead of skipping GPU or reference tests
 make cpp-test   # Catch2 host and device tests with -Werror
 make stubtest   # check src/vanderfast/_native.pyi against the extension
+make sdist      # source distribution + contents and metadata (twine) checks
 make wheel      # release-architecture wheel + device-code and dependency checks
 make gpu-verify # install dist/*.whl in a fresh venv and run the whole suite on the GPU
 ```
@@ -109,8 +110,8 @@ Publishing a GitHub release runs `.github/workflows/release.yml`:
    report covers every wheel byte for byte and the run passed. PyPI trusted
    publishing then uploads the sdist and wheel with attestations.
 
-`make wheel gpu-verify` runs steps 2 and 3 locally, apart from the manylinux
-container.
+`make sdist wheel gpu-verify` runs steps 1 to 3 locally, apart from the
+manylinux container.
 
 A wheel built locally with the conda toolchain is tagged `linux_x86_64`. It
 needs the libstdc++ and glibc of the machine that built it; auditwheel rates
@@ -135,7 +136,7 @@ release. The self-hosted runner never runs pull-request code.
    `CHANGELOG.md`. The version follows semantic versioning: a change that
    alters results, the public API, or the bundled tables is a major release.
 2. `make lint test-gpu cpp-test sanitize data-check fixtures-check` on a GPU
-   machine, then `make wheel gpu-verify` (which writes
+   machine, then `make sdist wheel gpu-verify` (which writes
    `reports/gpu-<commit>.json`); update the support matrix above and the
    release-artifact counts in `docs/validation.md` from that run.
 3. Commit, tag the commit `v<version>`, and push the tag. Publish a GitHub

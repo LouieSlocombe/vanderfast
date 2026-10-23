@@ -53,10 +53,7 @@ jobs:
           fi
 
       - name: Build and check the sdist
-        run: |
-          python -m build --sdist --no-isolation
-          python tools/check_sdist.py dist/*.tar.gz
-          python -m twine check --strict dist/*.tar.gz
+        run: make sdist
 
       - name: Upload the sdist
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
