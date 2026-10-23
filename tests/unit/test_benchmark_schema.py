@@ -44,6 +44,20 @@ def test_timing_summary_and_round_trip(tmp_path: Path) -> None:
     assert schema.validate({"schema": "other", "cases": [{}]})
 
 
+def test_envelope_without_git_or_nvidia_smi(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hosts without a driver (CI runners) or git still get a complete envelope."""
+    schema = _load("schema")
+
+    def missing(command: list[str], **_kwargs: object) -> object:
+        raise FileNotFoundError(command[0])
+
+    monkeypatch.setattr(schema.subprocess, "run", missing)
+    document = schema.envelope({"vanderfast": "test"}, {"sha256": "x"})
+    assert document["hardware"]["gpu"] == {}
+    assert document["git"] == {"commit": "", "dirty": False}
+    assert schema.validate(document) == []
+
+
 def test_workloads_are_deterministic() -> None:
     workloads = _load("workloads")
     for workload in workloads.WORKLOADS.values():

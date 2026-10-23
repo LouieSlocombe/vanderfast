@@ -98,8 +98,8 @@ Publishing a GitHub release runs `.github/workflows/release.yml`:
    - Finally it runs the tests that need no GPU.
 3. **gpu-verify**: a self-hosted runner labelled `cuda`, behind the `gpu`
    environment, installs the downloaded wheel into a fresh virtual
-   environment that has PyPI dependencies only (`dftd3==1.6.0` for the
-   reference tests).
+   environment that has PyPI dependencies only (`dftd3==1.6.0` and
+   `dftd4==4.2.0` for the reference tests).
    - It runs the full suite with `--require-native --require-cuda
      --require-reference --run-slow` in a scrubbed environment.
    - `tools/gpu_report.py record` writes `reports/gpu-<commit>.json`. The
@@ -126,3 +126,21 @@ Before the first release, the repository needs four things set up:
 
 Only maintainers can trigger the workflow, because only they can publish a
 release. The self-hosted runner never runs pull-request code.
+
+### Release checklist
+
+1. Set the new version in `project.version` (`pyproject.toml`), the
+   fallback `VANDERFAST_VERSION` in `CMakeLists.txt`, and `version` and
+   `date-released` in `CITATION.cff`; add the release's section to
+   `CHANGELOG.md`. The version follows semantic versioning: a change that
+   alters results, the public API, or the bundled tables is a major release.
+2. `make lint test-gpu cpp-test sanitize data-check fixtures-check` on a GPU
+   machine, then `make wheel gpu-verify` (which writes
+   `reports/gpu-<commit>.json`); update the support matrix above and the
+   release-artifact counts in `docs/validation.md` from that run.
+3. Commit, tag the commit `v<version>`, and push the tag. Publish a GitHub
+   release from the tag with the `CHANGELOG.md` section as its notes; that
+   triggers `release.yml`, whose `gpu` environment waits for a reviewer
+   before the self-hosted job runs.
+4. After `publish` succeeds, check `pip install vanderfast==<version>` in a
+   fresh virtual environment and `vanderfast info --cuda` on a GPU machine.

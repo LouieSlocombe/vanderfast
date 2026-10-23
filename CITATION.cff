@@ -1,0 +1,115 @@
+cff-version: 1.2.0
+message: >-
+  If you use vanderfast in published work, please cite it as below, together
+  with the DFT-D3 and DFT-D4 papers listed in THIRD_PARTY_NOTICES.md.
+type: software
+title: "vanderfast: GPU DFT-D3(BJ) and DFT-D4 dispersion energies, forces, and stress"
+abstract: >-
+  CUDA implementation of the DFT-D3(BJ) and DFT-D4 dispersion corrections,
+  including the Axilrod-Teller-Muto three-body term and the EEQ charge model,
+  for molecules and periodic systems, with a NumPy API and ASE calculators.
+authors:
+  - family-names: Slocombe
+    given-names: Louie
+    email: louies@hotmail.co.uk
+version: 1.0.0
+date-released: 2026-10-23
+license: MIT
+repository-code: https://github.com/LouieSlocombe/vanderfast
+url: https://github.com/LouieSlocombe/vanderfast
+keywords:
+  - dispersion correction
+  - DFT-D3
+  - DFT-D4
+  - EEQ
+  - CUDA
+  - ASE
+  - molecular dynamics
+references:
+  - type: article
+    title: "A consistent and accurate ab initio parametrization of density functional dispersion correction (DFT-D) for the 94 elements H-Pu"
+    authors:
+      - family-names: Grimme
+        given-names: Stefan
+      - family-names: Antony
+        given-names: Jens
+      - family-names: Ehrlich
+        given-names: Stephan
+      - family-names: Krieg
+        given-names: Helge
+    journal: The Journal of Chemical Physics
+    volume: 132
+    issue: 15
+    pages: "154104"
+    year: 2010
+    doi: 10.1063/1.3382344
+  - type: article
+    title: "Effect of the damping function in dispersion corrected density functional theory"
+    authors:
+      - family-names: Grimme
+        given-names: Stefan
+      - family-names: Ehrlich
+        given-names: Stephan
+      - family-names: Goerigk
+        given-names: Lars
+    journal: Journal of Computational Chemistry
+    volume: 32
+    issue: 7
+    pages: "1456-1465"
+    year: 2011
+    doi: 10.1002/jcc.21759
+  - type: article
+    title: "Extension of the D3 dispersion coefficient model"
+    authors:
+      - family-names: Caldeweyher
+        given-names: Eike
+      - family-names: Bannwarth
+        given-names: Christoph
+      - family-names: Grimme
+        given-names: Stefan
+    journal: The Journal of Chemical Physics
+    volume: 147
+    issue: 3
+    pages: "034112"
+    year: 2017
+    doi: 10.1063/1.4993215
+  - type: article
+    title: "A generally applicable atomic-charge dependent London dispersion correction"
+    authors:
+      - family-names: Caldeweyher
+        given-names: Eike
+      - family-names: Ehlert
+        given-names: Sebastian
+      - family-names: Hansen
+        given-names: Andreas
+      - family-names: Neugebauer
+        given-names: Hagen
+      - family-names: Spicher
+        given-names: Sebastian
+      - family-names: Bannwarth
+        given-names: Christoph
+      - family-names: Grimme
+        given-names: Stefan
+    journal: The Journal of Chemical Physics
+    volume: 150
+    issue: 15
+    pages: "154122"
+    year: 2019
+    doi: 10.1063/1.5090222
+  - type: article
+    title: "Extension and evaluation of the D4 London-dispersion model for periodic systems"
+    authors:
+      - family-names: Caldeweyher
+        given-names: Eike
+      - family-names: Mewes
+        given-names: Jan-Michael
+      - family-names: Ehlert
+        given-names: Sebastian
+      - family-names: Grimme
+        given-names: Stefan
+    journal: Physical Chemistry Chemical Physics
+    volume: 22
+    issue: 16
+    pages: "8499-8512"
+    year: 2020
+    doi: 10.1039/D0CP00502A

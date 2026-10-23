@@ -7,10 +7,12 @@ NumPy API and ASE calculators. D3 results agree with simple-dftd3 v1.6.0 to
 about 1e-15 in atomic units on every reference fixture; D4 results, including
 the EEQ partial charges, agree with dftd4 v4.2.0 to about 1e-13.
 
-> **Status: pre-release (0.1.0.dev0).** Feature-complete for D3(BJ) + ATM and
-> for D4 (EEQ charges, rational damping, ATM) on molecules, 3D cells, slabs,
-> and wires. Tested on one GPU (RTX 4080 SUPER, sm_89); see the support matrix
-> in [docs/build.md](docs/build.md).
+> **Status: 1.0.** D3(BJ) + ATM and D4 (EEQ charges, rational damping, ATM)
+> on molecules, 3D cells, slabs, and wires; the public API is stable and
+> follows [semantic versioning](https://semver.org/). Tested on one GPU
+> (RTX 4080 SUPER, sm_89); see the support matrix in
+> [docs/build.md](docs/build.md) and the release notes in
+> [CHANGELOG.md](CHANGELOG.md).
 
 ## Requirements
 
@@ -21,7 +23,7 @@ the EEQ partial charges, agree with dftd4 v4.2.0 to about 1e-13.
 
 ## Installation
 
-From a release wheel, once one is published on PyPI:
+From PyPI (a CUDA wheel for Linux x86_64 and CPython 3.14, plus the sdist):
 
 ```bash
 pip install vanderfast             # add [reference] for the dftd3 1.6.0 and dftd4 4.2.0 backends
@@ -167,6 +169,12 @@ make data-check      # regenerate the D3 and D4 reference tables byte for byte
 make fixtures-check  # regenerate the dftd3 and dftd4 fixtures
 make bench-smoke     # benchmark harness sanity run
 ```
+
+## Citing
+
+If vanderfast contributes to published work, cite it with the metadata in
+[CITATION.cff](CITATION.cff) alongside the D3 and D4 papers listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License
 

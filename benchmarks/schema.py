@@ -53,22 +53,27 @@ class Case:
     status: str = "ok"
 
 
+def _command_output(command: list[str]) -> str:
+    """Return a command's stdout, or an empty string if it is absent or fails."""
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError:  # the executable is not installed (no git, or no NVIDIA driver)
+        return ""
+    return completed.stdout.strip()
+
+
 def _git() -> dict[str, Any]:
     def run(*args: str) -> str:
-        command = ["git", *args]
-        return subprocess.run(command, capture_output=True, text=True, check=False).stdout.strip()
+        return _command_output(["git", *args])
 
     return {"commit": run("rev-parse", "HEAD"), "dirty": bool(run("status", "--porcelain"))}
 
 
 def _gpu() -> dict[str, Any]:
     query = "name,uuid,compute_cap,memory.total,driver_version,clocks.sm,clocks.mem,power.limit"
-    output = subprocess.run(
-        ["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"],  # noqa: S607
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout.strip()
+    output = _command_output(
+        ["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"]
+    )
     if not output:
         return {}
     values = [v.strip() for v in output.splitlines()[0].split(",")]

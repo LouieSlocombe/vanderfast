@@ -9,6 +9,8 @@ REQUIRED = [
     "CMakeLists.txt",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
+    "CHANGELOG.md",
+    "CITATION.cff",
     "data/sources.toml",
     "data/licenses/simple-dftd3-COPYING.LESSER",
     "data/licenses/mctc-lib-LICENSE",

@@ -86,5 +86,6 @@ also runs:
   --require-reference --run-slow` in a scrubbed environment.
 - `tools/gpu_report.py` records the wheel's sha256 with the result.
 
-For commit 7ee4352 this gave 826 passed and 1 skipped (the test that needs
-*no* CUDA device) on an RTX 4080 SUPER.
+For the 1.0.0 wheel this gave 1653 passed and 1 skipped (the test that needs
+*no* CUDA device) on an RTX 4080 SUPER, with compute-sanitizer memcheck,
+racecheck, synccheck, and initcheck reporting no errors.
