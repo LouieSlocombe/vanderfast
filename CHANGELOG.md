@@ -7,9 +7,29 @@ a major version, the public Python API (`vanderfast`, `vanderfast.ase`), the
 command line, the bundled reference tables, and the numerical results they
 produce are stable.
 
+## [1.1.0] - 2026-10-23
+
+The first release published to PyPI. The v1.0.0 tag exists but its release
+workflow failed before publishing, so 1.1.0 carries the 1.0.0 content plus
+the release-tooling fixes below; the code and the bundled tables are
+unchanged.
+
+### Fixed
+
+- The release workflow's sdist job needs `twine`, which the locked conda
+  environment did not contain. It is now part of the environment, the
+  lock, and the `build` dependency group; `make sdist` runs the same build
+  and checks as the release job, and CI runs `twine check` on every build.
+- A source distribution built from a working tree could contain Python
+  bytecode caches, because the `src/vanderfast/data/*` include pattern
+  overrode `.gitignore`. The pattern now names the data file types and
+  `tools/check_sdist.py` rejects any bytecode.
+- `benchmarks/schema.py` no longer fails when `nvidia-smi` or `git` is not
+  installed (first shipped in 1.0.0; recorded here for the PyPI release).
+
 ## [1.0.0] - 2026-10-23
 
-First stable release.
+First stable release (tagged on GitHub; not published to PyPI).
 
 ### Added
 
@@ -84,4 +104,5 @@ First stable release.
   compiled and checked for spills but have not run on hardware.
   See `docs/limitations.md` and the support matrix in `docs/build.md`.
 
+[1.1.0]: https://github.com/LouieSlocombe/vanderfast/releases/tag/v1.1.0
 [1.0.0]: https://github.com/LouieSlocombe/vanderfast/releases/tag/v1.0.0

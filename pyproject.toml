@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "vanderfast"
-version = "1.0.0"
+version = "1.1.0"
 description = "GPU DFT-D3(BJ) and DFT-D4 dispersion energies, forces, and stress with an ASE calculator."
 readme = "README.md"
 requires-python = ">=3.14"
