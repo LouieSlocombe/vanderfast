@@ -7,10 +7,27 @@ a major version, the public Python API (`vanderfast`, `vanderfast.ase`), the
 command line, the bundled reference tables, and the numerical results they
 produce are stable.
 
+## [1.1.1] - 2026-10-23
+
+The first release published to PyPI. The v1.0.0 and v1.1.0 tags exist but
+their release workflows failed before publishing, so 1.1.1 carries the 1.0.0
+content plus the release-tooling fixes below and in 1.1.0; the code and the
+bundled tables are unchanged.
+
+### Fixed
+
+- The release workflow's wheel tests ran without the CPU code-path pins
+  that CI sets (`OPENBLAS_CORETYPE`, `NPY_DISABLE_CPU_FEATURES`). On hosted
+  runners with AVX-512, NumPy's AVX-512 float64 `exp` differs from glibc's
+  in the last bit, so `test_derived_reference_tables_match_the_manifest`
+  could not reproduce the manifest's hash of the reference polarizabilities
+  and the wheel job failed. `[tool.cibuildwheel]` now sets the same pins
+  for the wheel tests.
+
 ## [1.1.0] - 2026-10-23
 
-The first release published to PyPI. The v1.0.0 tag exists but its release
-workflow failed before publishing, so 1.1.0 carries the 1.0.0 content plus
+Tagged on GitHub; not published to PyPI, because the wheel job of its
+release workflow failed (fixed in 1.1.1). It carries the 1.0.0 content plus
 the release-tooling fixes below; the code and the bundled tables are
 unchanged.
 
@@ -104,5 +121,6 @@ First stable release (tagged on GitHub; not published to PyPI).
   compiled and checked for spills but have not run on hardware.
   See `docs/limitations.md` and the support matrix in `docs/build.md`.
 
+[1.1.1]: https://github.com/LouieSlocombe/vanderfast/releases/tag/v1.1.1
 [1.1.0]: https://github.com/LouieSlocombe/vanderfast/releases/tag/v1.1.0
 [1.0.0]: https://github.com/LouieSlocombe/vanderfast/releases/tag/v1.0.0
