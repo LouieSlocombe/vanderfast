@@ -22,7 +22,7 @@ dev-cpu:
 	VANDERFAST_ENABLE_CUDA=OFF $(PYTHON) -m pip install --no-build-isolation --no-deps -e .
 
 lint:
-	prek run --all-files
+	prek run --all-files --show-diff-on-failure
 	mypy
 
 test:

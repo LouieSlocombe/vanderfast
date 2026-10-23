@@ -13,85 +13,29 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-permissions: {}
+permissions:
+  contents: read
 
 env:
   FORCE_COLOR: "1"
   OMP_NUM_THREADS: "1"
+  # Hosted runners mix AVX2 and AVX-512 CPUs. The fixtures are reproduced to
+  # ~1e-13 and the D4 charge solve amplifies one-ulp differences by ~1e6, so
+  # pin the code paths the fixtures were generated with: AVX2 OpenBLAS kernels
+  # and no AVX-512 NumPy loops (their float64 exp, log, and power differ from
+  # glibc in the last bit).
+  OPENBLAS_CORETYPE: Haswell
+  NPY_DISABLE_CPU_FEATURES: X86_V4 AVX512_ICL AVX512_SPR
 
 defaults:
   run:
     shell: bash -el {0}
 
 jobs:
-  lint:
-    name: Lint and type check
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up the locked conda environment
-        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
-        with:
-          environment-file: build_tools/conda-linux-64.lock
-          environment-name: vanderfast-dev
-
-      - name: Install the package without the CUDA backend
-        run: VANDERFAST_ENABLE_CUDA=OFF python -m pip install --no-build-isolation --no-deps -e .
-
-      - name: Run the pre-commit hooks
-        run: prek run --all-files --show-diff-on-failure
-
-      - name: Type check
-        run: mypy
-
-  test-cpu:
-    name: CPU tests (${{ matrix.environment }})
+  check:
+    name: Lint, reference data, and CPU tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - environment: locked
-            file: build_tools/conda-linux-64.lock
-          - environment: oldest
-            file: build_tools/environment-oldest.yml
-
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up the conda environment
-        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
-        with:
-          environment-file: ${{ matrix.file }}
-          environment-name: vanderfast-dev
-
-      - name: Install the package without the CUDA backend
-        run: VANDERFAST_ENABLE_CUDA=OFF python -m pip install --no-build-isolation --no-deps -e .
-
-      - name: Test against the oracle and the dftd3 reference
-        run: python -m pytest --require-reference
-
-  data:
-    name: Reference data and fixtures
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
 
     steps:
       - name: Check out the repository
@@ -106,26 +50,50 @@ jobs:
           environment-name: vanderfast-dev
 
       - name: Install the package without the CUDA backend
-        run: VANDERFAST_ENABLE_CUDA=OFF python -m pip install --no-build-isolation --no-deps -e .
+        run: make dev-cpu
 
-      - name: Regenerate the reference tables from the pinned sources
-        run: python -I tools/generate_d3_data.py --check --verify-binary "$CONDA_PREFIX/lib"
+      - name: Lint and type check
+        run: make lint
 
-      - name: Regenerate the D4 reference tables from the pinned sources
-        run: python -I tools/generate_d4_data.py --check --verify-binary "$CONDA_PREFIX/lib"
+      - name: Regenerate the reference tables and fixtures from the pinned sources
+        if: ${{ !cancelled() }}
+        run: make data-check fixtures-check
 
-      - name: Regenerate the dftd3 fixtures
-        run: python tools/generate_fixtures.py --check
+      - name: Test against the oracle and the dftd3 and dftd4 references
+        if: ${{ !cancelled() }}
+        run: python -m pytest --require-reference
 
-      - name: Regenerate the dftd4 fixtures
-        run: python tools/generate_d4_fixtures.py --check
+  oldest:
+    name: CPU tests (oldest dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # NumPy 2.3 names its AVX-512 targets individually.
+      NPY_DISABLE_CPU_FEATURES: >-
+        AVX512F AVX512CD AVX512_KNL AVX512_KNM AVX512_SKX AVX512_CLX AVX512_CNL AVX512_ICL AVX512_SPR
 
-  cuda-build:
-    name: CUDA build (no GPU)
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up the oldest supported conda environment
+        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+        with:
+          environment-file: build_tools/environment-oldest.yml
+          environment-name: vanderfast-dev
+
+      - name: Install the package without the CUDA backend
+        run: make dev-cpu
+
+      - name: Test against the oracle and the dftd3 and dftd4 references
+        run: python -m pytest --require-reference
+
+  build:
+    name: Distributions and CUDA build (no GPU)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    permissions:
-      contents: read
     env:
       VANDERFAST_RELEASE_BUILD: "ON"
       VANDERFAST_WERROR: "ON"
@@ -143,16 +111,22 @@ jobs:
           environment-file: build_tools/conda-linux-64.lock
           environment-name: vanderfast-dev
 
-      - name: Build the wheel for every release architecture
-        run: python -m build --wheel --no-isolation
+      # Without --sdist or --wheel, build makes the sdist and then builds the
+      # wheel from it, so an incomplete sdist fails here.
+      - name: Build the sdist, then the wheel from it for every release architecture
+        run: python -m build --no-isolation
 
-      - name: Check device code and dynamic dependencies
-        run: python tools/check_wheel.py dist/*.whl
+      - name: Check the sdist contents, device code, and dynamic dependencies
+        run: |
+          python tools/check_sdist.py dist/*.tar.gz
+          python tools/check_wheel.py dist/*.whl
 
       - name: Install the wheel and run the tests that need no GPU
         run: |
           python -m pip install --no-deps dist/*.whl
           cd "$RUNNER_TEMP"
+          vanderfast verify-data
+          vanderfast info
           python -m pytest "$GITHUB_WORKSPACE/tests/cuda" "$GITHUB_WORKSPACE/tests/unit/test_cli.py" \
             --rootdir "$GITHUB_WORKSPACE" -m "native and not cuda" --require-native --no-cov
           python -m mypy.stubtest vanderfast._native \
@@ -165,40 +139,10 @@ jobs:
           cmake --build build/cpp
           ctest --test-dir build/cpp -L host --output-on-failure
 
-  sdist:
-    name: Source distribution
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up the locked conda environment
-        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
-        with:
-          environment-file: build_tools/conda-linux-64.lock
-          environment-name: vanderfast-dev
-
-      - name: Build the sdist
-        run: python -m build --sdist --no-isolation
-
-      - name: Check the sdist contents
-        run: python tools/check_sdist.py dist/*.tar.gz
-
-      - name: Install the sdist without CUDA and smoke test it
-        run: |
-          VANDERFAST_ENABLE_CUDA=OFF python -m pip install --no-build-isolation --no-deps dist/*.tar.gz
-          cd "$RUNNER_TEMP" && vanderfast verify-data && vanderfast info
-
   all-green:
     name: All checks passed
     if: always()
-    needs: [lint, test-cpu, data, cuda-build, sdist]
+    needs: [check, oldest, build]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
