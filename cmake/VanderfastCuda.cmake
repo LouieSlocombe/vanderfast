@@ -3,14 +3,14 @@ include_guard(GLOBAL)
 
 enable_language(CUDA)
 
-if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13.0)
+if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.6)
   message(FATAL_ERROR
-    "vanderfast requires CUDA >= 13.0, but ${CMAKE_CUDA_COMPILER} is "
+    "vanderfast requires CUDA >= 12.6, but ${CMAKE_CUDA_COMPILER} is "
     "${CMAKE_CUDA_COMPILER_VERSION}. Activate the vanderfast-dev conda environment "
-    "or set CUDACXX to a CUDA 13 nvcc (for example /usr/local/cuda-13.1/bin/nvcc).")
+    "or set CUDACXX to a CUDA 12.6 or newer nvcc (for example /usr/local/cuda-12.9/bin/nvcc).")
 endif()
 
-find_package(CUDAToolkit 13.0 REQUIRED)
+find_package(CUDAToolkit 12.6 REQUIRED)
 string(REGEX MATCH "^[0-9]+\\.[0-9]+" _vf_nvcc_version "${CMAKE_CUDA_COMPILER_VERSION}")
 string(REGEX MATCH "^[0-9]+\\.[0-9]+" _vf_toolkit_version "${CUDAToolkit_VERSION}")
 if(NOT _vf_nvcc_version VERSION_EQUAL _vf_toolkit_version)
@@ -25,9 +25,16 @@ set(CMAKE_CUDA_EXTENSIONS OFF)
 
 # "release" names the architecture list every published wheel carries: SASS for
 # each supported generation plus PTX for the newest, so later GPUs can JIT.
+# Blackwell (sm_100, sm_120) needs CUDA >= 12.8.
 set(VANDERFAST_RELEASE_CUDA_ARCHITECTURES
   "75-real;80-real;86-real;89-real;90-real;100-real;120-real;120-virtual")
 if(VANDERFAST_CUDA_ARCHITECTURES STREQUAL "release")
+  if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.8)
+    message(FATAL_ERROR
+      "The release architecture list needs CUDA >= 12.8 for sm_100 and sm_120, but "
+      "${CMAKE_CUDA_COMPILER} is ${CMAKE_CUDA_COMPILER_VERSION}. Pass an explicit list "
+      "instead, for example 75-real;80-real;86-real;89-real;90-real;90-virtual.")
+  endif()
   set(VANDERFAST_CUDA_ARCHITECTURES "${VANDERFAST_RELEASE_CUDA_ARCHITECTURES}")
 endif()
 

@@ -64,9 +64,9 @@ jobs:
         run: python -m pytest --require-reference
 
   oldest:
-    name: CPU tests (oldest dependencies)
+    name: CPU tests and CUDA 12.6 build (oldest dependencies)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       # NumPy 2.3 names its AVX-512 targets individually.
       NPY_DISABLE_CPU_FEATURES: >-
@@ -89,6 +89,26 @@ jobs:
 
       - name: Test against the oracle and the dftd3 and dftd4 references
         run: python -m pytest --require-reference
+
+      # CUDA 12.6 predates Blackwell, so the release list (sm_100, sm_120) is out
+      # of reach: build every release architecture up to sm_90, with its PTX.
+      - name: Build the wheel with CUDA 12.6 and check its device code
+        if: ${{ !cancelled() }}
+        env:
+          VANDERFAST_RELEASE_BUILD: "ON"
+          VANDERFAST_WERROR: "ON"
+          VANDERFAST_CUDA_ARCHITECTURES: 75-real;80-real;86-real;89-real;90-real;90-virtual
+        run: |
+          python -m pip wheel --no-build-isolation --no-deps --wheel-dir dist .
+          python tools/check_wheel.py --sass 75,80,86,89,90 --ptx 90 dist/*.whl
+
+      - name: Install the CUDA 12.6 wheel and run the tests that need no GPU
+        run: |
+          python -m pip install --no-deps --force-reinstall dist/*.whl
+          cd "$RUNNER_TEMP"
+          vanderfast info
+          python -m pytest "$GITHUB_WORKSPACE/tests/cuda" "$GITHUB_WORKSPACE/tests/unit/test_cli.py" \
+            --rootdir "$GITHUB_WORKSPACE" -m "native and not cuda" --require-native --no-cov
 
   build:
     name: Distributions and CUDA build (no GPU)
@@ -140,10 +160,45 @@ jobs:
           cmake --build build/cpp
           ctest --test-dir build/cpp -L host --output-on-failure
 
+  cuda13:
+    name: CUDA 13 build (newest toolkit, no GPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      VANDERFAST_RELEASE_BUILD: "ON"
+      VANDERFAST_WERROR: "ON"
+      VANDERFAST_CUDA_ARCHITECTURES: release
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Unlocked: the solve picks the newest CUDA 13.x on conda-forge.
+      - name: Set up the newest CUDA 13 conda environment
+        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+        with:
+          environment-file: build_tools/environment-cuda13.yml
+          environment-name: vanderfast-dev
+
+      - name: Build the wheel for every release architecture and check its device code
+        run: |
+          python -m pip wheel --no-build-isolation --no-deps --wheel-dir dist .
+          python tools/check_wheel.py dist/*.whl
+
+      - name: Install the wheel and run the tests that need no GPU
+        run: |
+          python -m pip install --no-deps dist/*.whl
+          cd "$RUNNER_TEMP"
+          vanderfast info
+          python -m pytest "$GITHUB_WORKSPACE/tests/cuda" "$GITHUB_WORKSPACE/tests/unit/test_cli.py" \
+            --rootdir "$GITHUB_WORKSPACE" -m "native and not cuda" --require-native --no-cov
+
   all-green:
     name: All checks passed
     if: always()
-    needs: [check, oldest, build]
+    needs: [check, oldest, build, cuda13]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}

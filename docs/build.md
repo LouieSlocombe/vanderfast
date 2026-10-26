@@ -8,14 +8,20 @@ and pybind11. The supported toolchain is the conda-forge environment in
 
 | Component | Version |
 | --- | --- |
-| CUDA compiler | `cuda-nvcc` 13.1 (conda-forge) |
-| Host compiler | GCC 15 (`gxx_linux-64=15`; CUDA 13.1 accepts GCC <= 15) |
+| CUDA compiler | `cuda-nvcc` 12.9 (conda-forge) |
+| Host compiler | GCC 14 (`gxx_linux-64=14`; CUDA 12.9 accepts GCC <= 14) |
 | CUDA runtime | statically linked (`CUDA::cudart_static`) |
 | Python | 3.14 |
 
-The build refuses CUDA < 13.0 and mixed compiler/toolkit versions. To use a
-system CUDA toolkit instead, point `CUDACXX` at its `nvcc` (for example
-`/usr/local/cuda-13.1/bin/nvcc`).
+The build accepts CUDA 12.6 and newer, CUDA 13 included, and refuses older
+toolkits and mixed compiler/toolkit versions. To use a system CUDA toolkit
+instead, point `CUDACXX` at its `nvcc` (for example
+`/usr/local/cuda-13.1/bin/nvcc`). Each toolkit caps the host compiler: CUDA
+12.6 accepts GCC <= 13, CUDA 12.8 and 12.9 GCC <= 14, CUDA 13.1 GCC <= 15.
+CI builds with three toolchains: the lock (CUDA 12.9),
+`build_tools/environment-oldest.yml` (CUDA 12.6 with GCC 13, the oldest
+supported), and `build_tools/environment-cuda13.yml` (the newest CUDA 13
+release with GCC 15, unlocked).
 
 ## Commands
 
@@ -55,8 +61,11 @@ tuning policies spill a few bytes on some architectures.
 `release` expands to the release architecture list,
 `75-real;80-real;86-real;89-real;90-real;100-real;120-real;120-virtual`: SASS
 for Turing through Blackwell (sm_103 runs sm_100 code, sm_121 runs sm_120 code)
-and compute_120 PTX for newer GPUs. CUDA 13 no longer supports Maxwell, Pascal,
-or Volta.
+and compute_120 PTX for newer GPUs. Blackwell needs CUDA 12.8, so `release`
+refuses older toolkits; with CUDA 12.6, list the architectures instead, for
+example `75-real;80-real;86-real;89-real;90-real;90-virtual` (Blackwell GPUs
+then JIT-compile the compute_90 PTX). Compute capability 7.5 is the floor with
+every toolkit; CUDA 13 no longer supports Maxwell, Pascal, or Volta.
 
 ## Support matrix
 
@@ -66,6 +75,16 @@ Only combinations that have been exercised are listed.
 | --- | --- | --- | --- | --- | --- |
 | NVIDIA GeForce RTX 4080 SUPER | 8.9 | 615.71.09 (CUDA 13.4 UMD) | editable, `native` (sm_89), CUDA 13.1.115 | Linux x86_64 | full suite, sanitizers, benchmarks |
 | NVIDIA GeForce RTX 4080 SUPER | 8.9 | 615.71.09 (CUDA 13.4 UMD) | release-architecture wheel, CUDA 13.1.115 (`make wheel gpu-verify`) | Linux x86_64 | full suite in a fresh venv, benchmarks |
+| NVIDIA GeForce RTX 4080 SUPER | 8.9 | 615.71.09 (CUDA 13.4 UMD) | editable, `native` (sm_89), CUDA 12.9.86 | Linux x86_64 | full suite, C++ tests |
+| NVIDIA GeForce RTX 4080 SUPER | 8.9 | 615.71.09 (CUDA 13.4 UMD) | release-architecture wheel, CUDA 12.9.86 | Linux x86_64 | full suite in a fresh venv, sanitizers |
+| NVIDIA GeForce RTX 4080 SUPER | 8.9 | 615.71.09 (CUDA 13.4 UMD) | release-architecture wheel, CUDA 13.4.92 | Linux x86_64 | full suite |
+| NVIDIA GeForce RTX 4080 SUPER | 8.9 | 615.71.09 (CUDA 13.4 UMD) | editable, `native` (sm_89), CUDA 12.6.85 | Linux x86_64 | full suite, C++ tests |
+| NVIDIA GeForce RTX 4080 SUPER | 8.9 | 615.71.09 (CUDA 13.4 UMD) | wheel for `75-real;80-real;86-real;89-real;90-real;90-virtual`, CUDA 12.6.85 | Linux x86_64 | full suite |
+
+The 13.1, 12.9, and 12.6 wheels give bitwise identical energies, D4 charges,
+and D4 stress on the bundled test structures. Forces (up to 8e-17 eV/Å) and D3
+stress differ only as much as two runs of one build do: the force kernels
+accumulate with atomics, whose order varies.
 
 Not yet exercised:
 - **Other architectures.** The release wheel contains SASS for sm_75, sm_80,
@@ -73,13 +92,19 @@ Not yet exercised:
   compiled and checked for spills but have never run on a GPU, and neither
   has the PTX just-in-time path. A second architecture, ideally a data-centre
   part with full-rate FP64, is the main open validation gap.
-- **The manylinux_2_28 build.** The cibuildwheel container build has not run
-  yet; it needs Docker and runs in the release workflow.
-- **Drivers.** No driver older than the one listed has been tried.
+- **The CUDA 12.9 manylinux_2_28 build.** The cibuildwheel container build has
+  not run with CUDA 12.9 yet; it needs Docker and runs in the release workflow.
+- **Drivers.** No driver older than the one listed has been tried. In
+  particular, the release wheel's CUDA 12.6 driver floor rests on NVIDIA's
+  minor version compatibility, not on a test.
 
-The statically linked runtime needs a driver that supports CUDA 13.1 for SASS
-execution, or a newer one for PTX just-in-time compilation. Importing
-`vanderfast._native` does not require a GPU; creating a context does.
+The release wheel links the CUDA 12.9 runtime statically. It runs on drivers
+for CUDA 12.6 and newer, CUDA 13 included: within CUDA 12, NVIDIA's minor
+version compatibility lets a 12.9 runtime and its SASS run on an older 12.x
+driver. PTX just-in-time compilation, for GPUs newer than sm_120, needs a
+driver that supports CUDA 12.9 or newer. A build from source with a CUDA 13
+toolkit needs a CUDA 13 driver. Importing `vanderfast._native` does not
+require a GPU; creating a context does.
 
 ## Releasing
 
@@ -90,7 +115,7 @@ Publishing a GitHub release runs `.github/workflows/release.yml`:
 2. **wheel**: cibuildwheel builds `cp314-manylinux_x86_64` in the
    `manylinux_2_28` image (configured in `[tool.cibuildwheel]` in
    `pyproject.toml`):
-   - CUDA 13.1 comes from NVIDIA's RHEL 8 repository, at the same nvcc and
+   - CUDA 12.9 comes from NVIDIA's RHEL 8 repository, at the same nvcc and
      runtime versions as the conda lock.
    - The wheel is compiled for the `release` architecture list with `-Werror`.
    - `auditwheel repair --exclude libcuda.so.1` repairs it, then
@@ -121,7 +146,7 @@ that image, gcc-toolset links newer libstdc++ symbols statically.
 Before the first release, the repository needs four things set up:
 - a PyPI trusted publisher for `release.yml` and the `pypi` environment;
 - a `gpu` environment with required reviewers;
-- a self-hosted runner with the `cuda` label, a driver that supports CUDA 13.1,
+- a self-hosted runner with the `cuda` label, a driver that supports CUDA 12.6,
   and network access to PyPI;
 - protected `v*` tags.
 

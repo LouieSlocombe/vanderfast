@@ -16,19 +16,19 @@ dependencies:
   - dftd4-python=4.2.0
   - dftd4=4.2.0
   - multicharge=0.5.0
-  # Build backend and native toolchain (CUDA 13.1 accepts host GCC <= 15)
+  # Build backend and native toolchain (CUDA 12.9 accepts host GCC <= 14)
   - scikit-build-core>=1.1.1
   - pybind11>=3.0.1
   - cmake>=4.1
   - ninja
   - python-build
-  - cuda-version=13.1
+  - cuda-version=12.9
   - cuda-nvcc
   - cuda-cudart-dev
   - cuda-cudart-static
   - cuda-cuobjdump
-  - gxx_linux-64=15.*
-  - libstdcxx>=15
+  - gxx_linux-64=14.*
+  - libstdcxx>=14
   - catch2>=3.5
   - ccache
   # Test and development tools

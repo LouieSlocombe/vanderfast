@@ -1,4 +1,5 @@
-# Oldest dependency versions allowed by pyproject.toml (CPU tests only).
+# Oldest dependency versions allowed by pyproject.toml, and the oldest supported
+# CUDA toolkit. CI runs the CPU tests and builds (but cannot run) the extension.
 name: vanderfast-dev
 
 channels:
@@ -19,5 +20,12 @@ dependencies:
   - pybind11=3.0.1
   - cmake>=4.1
   - ninja
+  # CUDA 12.6 accepts host GCC <= 13
+  - cuda-version=12.6
+  - cuda-nvcc
+  - cuda-cudart-dev
+  - cuda-cudart-static
+  - cuda-cuobjdump
+  - gxx_linux-64=13.*
   - pytest>=9.1.1
   - pytest-cov>=7.1.0

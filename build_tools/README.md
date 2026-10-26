@@ -2,13 +2,14 @@
 
 vanderfast is developed in a conda-forge environment that provides Python, the
 runtime dependencies, the pinned `dftd3` 1.6.0 reference, and a self-contained
-CUDA 13.1 + GCC 15 toolchain (CUDA 13.1 accepts host GCC <= 15).
+CUDA 12.9 + GCC 14 toolchain (CUDA 12.9 accepts host GCC <= 14).
 
 | File | Purpose |
 | --- | --- |
 | `environment.yml` | Development environment specification (source of truth) |
 | `conda-linux-64.lock` | Explicit lock of a solved `environment.yml`, used by CI |
-| `environment-oldest.yml` | Oldest allowed dependency versions, CPU tests only |
+| `environment-oldest.yml` | Oldest allowed dependency versions and the oldest supported CUDA (12.6 + GCC 13): CPU tests and a no-GPU CUDA build |
+| `environment-cuda13.yml` | Newest CUDA 13 release + GCC 15, unlocked: a no-GPU CUDA build |
 
 Create and activate the environment, then install vanderfast in editable mode:
 
@@ -29,7 +30,8 @@ conda list -n vanderfast-dev --explicit --md5 > build_tools/conda-linux-64.lock
 ```
 
 The machine's `/usr/bin/nvcc` may be an older distribution CUDA. The CMake build
-refuses CUDA < 13.0, and the conda toolchain keeps system CUDA headers out of
-the include path. To build with a system toolkit instead, set
-`CUDACXX=/usr/local/cuda-13.1/bin/nvcc`. Profilers and `compute-sanitizer` from a
-system CUDA 13.1 installation work with binaries built by the conda toolchain.
+refuses CUDA < 12.6, and the conda toolchain keeps system CUDA headers out of
+the include path. To build with a system toolkit instead, set `CUDACXX` to its
+nvcc, for example `CUDACXX=/usr/local/cuda-13.1/bin/nvcc`. Profilers and
+`compute-sanitizer` from a system CUDA 13.1 installation work with binaries built
+by the conda toolchain.

@@ -23,6 +23,6 @@ def load_native() -> ModuleType:
     except ImportError as error:
         msg = (
             "the vanderfast CUDA extension is not available "
-            f"({error}); reinstall with VANDERFAST_ENABLE_CUDA=ON and a CUDA >= 13 toolkit"
+            f"({error}); reinstall with VANDERFAST_ENABLE_CUDA=ON and a CUDA >= 12.6 toolkit"
         )
         raise NativeExtensionMissingError(msg) from error
