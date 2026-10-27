@@ -18,8 +18,8 @@ the EEQ partial charges, agree with dftd4 v4.2.0 to about 1e-13.
 
 - Linux x86_64, Python 3.14
 - An NVIDIA GPU with compute capability 7.5 or newer and a driver that supports
-  CUDA 13.1 (the CUDA runtime is linked statically; no CUDA toolkit is needed
-  at run time)
+  CUDA 12.6 or newer, CUDA 13 included (the CUDA runtime is linked statically;
+  no CUDA toolkit is needed at run time)
 
 ## Installation
 
@@ -30,7 +30,8 @@ pip install vanderfast             # add [reference] for the dftd3 1.6.0 and dft
 python -m vanderfast info --json   # build, data, and device report
 ```
 
-From source, use the conda-forge toolchain in `build_tools/`:
+From source, use the conda-forge toolchain in `build_tools/` (any CUDA toolkit
+from 12.6 on works; see [docs/build.md](docs/build.md)):
 
 ```bash
 conda env create -f build_tools/environment.yml

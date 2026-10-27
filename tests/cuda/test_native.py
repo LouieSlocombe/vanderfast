@@ -43,7 +43,9 @@ def test_build_info_describes_the_policy(native: Any) -> None:
     assert info["cuda_runtime"] == "static"
     assert info["fast_math"] == "false"
     assert info["precision"] == "float64"
-    assert info["cuda_compiler"].startswith("NVIDIA 13.")
+    compiler, version = info["cuda_compiler"].split()
+    assert compiler == "NVIDIA"
+    assert tuple(int(part) for part in version.split(".")[:2]) >= (12, 6)
 
 
 def test_embedded_tables_match_the_python_package(native: Any) -> None:

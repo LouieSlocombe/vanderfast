@@ -99,7 +99,7 @@ sdist.exclude = [
 ]
 messages.after-failure = """
 vanderfast native build failed. Activate the conda environment from
-build_tools/environment.yml (or set CUDACXX to a CUDA >= 13.0 nvcc).
+build_tools/environment.yml (or set CUDACXX to a CUDA >= 12.6 nvcc).
 For a pure-Python install without the CUDA backend, set VANDERFAST_ENABLE_CUDA=OFF.
 """
 
@@ -132,12 +132,13 @@ audit-requires = ["twine"]
 audit-command = "twine check --strict {wheel}"
 
 [tool.cibuildwheel.linux]
-# The same CUDA 13.1 nvcc and runtime as the conda lock (build_tools/), from
-# NVIDIA's signed RHEL 8 repository.
+# The same CUDA 12.9 nvcc and runtime as the conda lock (build_tools/), from
+# NVIDIA's signed RHEL 8 repository. CUDA 12.9 accepts the image's
+# gcc-toolset-14, and its runtime runs on CUDA 12.6+ drivers, CUDA 13 included.
 before-all = [
   "dnf install -y dnf-plugins-core",
   "dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo",
-  "dnf install -y cuda-nvcc-13-1-13.1.115 cuda-cudart-devel-13-1-13.1.80 cuda-cuobjdump-13-1-13.1.115",
+  "dnf install -y cuda-nvcc-12-9-12.9.86 cuda-cudart-devel-12-9-12.9.79 cuda-cuobjdump-12-9-12.9.82",
 ]
 # libcuda.so.1 comes from the driver and is loaded at run time by the static
 # CUDA runtime; the wheel must never vendor it.
@@ -147,8 +148,8 @@ repair-wheel-command = [
 ]
 
 [tool.cibuildwheel.linux.environment]
-PATH = "/usr/local/cuda-13.1/bin:$PATH"
-CUDACXX = "/usr/local/cuda-13.1/bin/nvcc"
+PATH = "/usr/local/cuda-12.9/bin:$PATH"
+CUDACXX = "/usr/local/cuda-12.9/bin/nvcc"
 VANDERFAST_RELEASE_BUILD = "ON"
 VANDERFAST_WERROR = "ON"
 VANDERFAST_CUDA_ARCHITECTURES = "release"

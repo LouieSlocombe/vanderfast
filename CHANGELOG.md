@@ -7,6 +7,25 @@ a major version, the public Python API (`vanderfast`, `vanderfast.ase`), the
 command line, the bundled reference tables, and the numerical results they
 produce are stable.
 
+## [Unreleased]
+
+### Changed
+
+- vanderfast supports CUDA 12.6 and newer, CUDA 13 included. The release
+  wheel is built with CUDA 12.9 instead of 13.1, so it runs on drivers
+  that support CUDA 12.6 or newer (previously 13.1). It keeps SASS for
+  sm_75, sm_80, sm_86, sm_89, sm_90, sm_100, and sm_120 and PTX for
+  compute_120.
+- Source builds accept any CUDA toolkit from 12.6 (previously 13.0). The
+  `release` architecture list needs CUDA 12.8 or newer, for Blackwell;
+  with CUDA 12.6, pass an explicit list such as
+  `75-real;80-real;86-real;89-real;90-real;90-virtual`.
+- The conda development environment and its lock move to CUDA 12.9 and
+  GCC 14; recreate `vanderfast-dev` from `build_tools/conda-linux-64.lock`.
+  CI also builds the extension with CUDA 12.6 and GCC 13, the oldest
+  supported toolchain, in the oldest-dependencies job, and with the newest
+  CUDA 13 release in a new `cuda13` job.
+
 ## [1.1.2] - 2026-10-23
 
 The first release published to PyPI. The v1.0.0, v1.1.0, and v1.1.1 tags

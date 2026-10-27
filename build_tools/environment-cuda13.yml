@@ -1,0 +1,26 @@
+# The newest CUDA 13 toolkit, unlocked so that CI follows each 13.x release.
+# CI builds (but cannot run) the extension with it.
+name: vanderfast-dev
+
+channels:
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  - python=3.14
+  - pip>=25.1
+  - numpy>=2.3.3
+  - ase>=3.26
+  - scikit-build-core>=1.1.1
+  - pybind11>=3.0.1
+  - cmake>=4.1
+  - ninja
+  # Every CUDA 13 release accepts host GCC 15
+  - cuda-version=13.*
+  - cuda-nvcc
+  - cuda-cudart-dev
+  - cuda-cudart-static
+  - cuda-cuobjdump
+  - gxx_linux-64=15.*
+  - pytest>=9.1.1
+  - pytest-cov>=7.1.0

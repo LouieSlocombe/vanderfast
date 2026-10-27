@@ -75,7 +75,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Configuration lives in [tool.cibuildwheel] in pyproject.toml: CUDA 13.1
+      # Configuration lives in [tool.cibuildwheel] in pyproject.toml: CUDA 12.9
       # from NVIDIA's RHEL 8 repository, the release architecture list,
       # auditwheel without libcuda, tools/check_wheel.py, and the no-GPU tests.
       - name: Build, repair, check, and test the wheel

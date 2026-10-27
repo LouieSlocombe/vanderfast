@@ -5,6 +5,19 @@
 
 #include <cstdint>
 
+// CUDA 13 deprecates double4 for the explicitly aligned double4_16a and
+// double4_32a. CUDA 12 has neither, so define the 32-byte one with CUDA 13's
+// layout and alignment.
+#if CUDART_VERSION < 13000
+struct alignas(32) double4_32a {
+  double x, y, z, w;
+};
+
+__host__ __device__ inline double4_32a make_double4_32a(double x, double y, double z, double w) {
+  return {x, y, z, w};
+}
+#endif
+
 namespace vanderfast::cuda {
 
 constexpr int kRefPad = 8;  // reference arrays are padded to 8 entries
