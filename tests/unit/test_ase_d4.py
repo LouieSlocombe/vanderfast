@@ -1,5 +1,6 @@
 """The D4 ASE calculator (on the oracle-backed fake native module)."""
 
+import importlib
 import json
 
 import numpy as np
@@ -156,7 +157,7 @@ def test_todict_is_json_serialisable() -> None:
 
 @pytest.mark.reference_d4
 def test_reference_backend_matches_dftd4_ase() -> None:
-    dftd4_ase = pytest.importorskip("dftd4.ase")
+    dftd4_ase = importlib.import_module("dftd4.ase")
     atoms = structures.skewed_triclinic()
     atoms.set_initial_charges([0.5, 0.0, 0.0, 0.0])
     ours = D4Calculator(method="pbe", backend="reference")

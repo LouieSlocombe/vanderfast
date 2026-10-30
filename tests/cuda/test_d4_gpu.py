@@ -8,6 +8,7 @@ import pytest
 from support import native_helpers as nh
 from support.fd import agrees_over_sweep, position_gradient
 from support.fixtures_d4 import D4FixtureCase, all_cases
+from support.inputs import SHORT_D4, bohr
 from support.tolerances import (
     D4_GPU_CHARGE_ABS,
     D4_GPU_GRADIENT_ABS,
@@ -55,29 +56,29 @@ def _ion(name: str) -> tuple[np.ndarray, np.ndarray, float]:
     return atoms.numbers, atoms.positions * INV_BOHR, charge
 
 
-@pytest.mark.parametrize(
-    ("numbers", "positions", "charge", "cell", "pbc"),
-    [
-        pytest.param(*_ion("acetate"), None, (False,) * 3, id="acetate"),
-        pytest.param(*_ion("hexaaqua_iron"), None, (False,) * 3, id="hexaaqua_iron"),
-        pytest.param(
-            structures.magnesia_primitive().numbers,
-            structures.magnesia_primitive().positions * INV_BOHR,
-            0.0,
-            structures.magnesia_primitive().cell[:] * INV_BOHR,
-            (True,) * 3,
-            id="mgo_primitive",
-        ),
-    ],
-)
-def test_intermediates_match_the_oracle(
-    numbers: np.ndarray, positions: np.ndarray, charge: float, cell: Any, pbc: tuple[bool, ...]
-) -> None:
-    ctx = nh.d4_context(numbers, PBE, charge=charge)
+INTERMEDIATES = {
+    "acetate": structures.IONS["acetate"],
+    "hexaaqua_iron": structures.IONS["hexaaqua_iron"],
+    "mgo_primitive": (structures.magnesia_primitive, 0.0),
+}
+
+
+@pytest.mark.parametrize("name", list(INTERMEDIATES))
+def test_intermediates_match_the_oracle(name: str) -> None:
+    build, charge = INTERMEDIATES[name]
+    numbers, positions, cell, pbc = bohr(build())
+    ctx = nh.d4_context(numbers, PBE, SHORT_D4, charge=charge)
     h = np.zeros((3, 3)) if cell is None else cell
-    debug = ctx.debug(positions, h, pbc, derivatives=True)
+    debug = ctx.debug(positions, h, tuple(bool(p) for p in pbc), derivatives=True)
     oracle = _oracle_d4.evaluate(
-        numbers, positions, parameters=PBE, charge=charge, cell=cell, pbc=pbc, gradient=True
+        numbers,
+        positions,
+        parameters=PBE,
+        charge=charge,
+        cell=cell,
+        pbc=pbc,
+        cutoffs=SHORT_D4,
+        gradient=True,
     )
     nref = oracle.weights.shape[1]
     np.testing.assert_allclose(debug["cn"], oracle.cn, rtol=1e-13, atol=1e-15)

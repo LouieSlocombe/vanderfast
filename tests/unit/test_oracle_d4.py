@@ -6,6 +6,7 @@ import struct
 
 import numpy as np
 import pytest
+from support.inputs import SHORT_D4
 
 from vanderfast import _oracle_d4
 from vanderfast._oracle_d4 import (
@@ -26,13 +27,12 @@ from vanderfast._oracle_d4 import (
 )
 from vanderfast.data.d4 import load_d4_manifest, load_d4_reference_tables
 from vanderfast.errors import ChargeSolverError, InputError
-from vanderfast.parameters_d4 import D4Cutoffs, D4Parameters
+from vanderfast.parameters_d4 import D4Parameters
 from vanderfast.testing import structures
 from vanderfast.units import INV_BOHR
 
 PBE = D4Parameters(s8=0.95948085, a1=0.38574991, a2=4.80688534)
 PBE_PAIR = D4Parameters(s8=0.95948085, a1=0.38574991, a2=4.80688534, s9=0.0)
-SHORT = D4Cutoffs(cn=20.0, disp2=25.0, disp3=15.0)
 
 
 def test_derived_reference_tables_match_the_manifest() -> None:
@@ -177,7 +177,7 @@ def test_weights_fall_back_when_every_gaussian_underflows() -> None:
 def test_counting_conventions_agree() -> None:
     rocksalt = structures.rocksalt_primitive()
     args = (rocksalt.numbers, rocksalt.positions * INV_BOHR)
-    kwargs = {"cell": rocksalt.cell[:] * INV_BOHR, "pbc": rocksalt.pbc, "cutoffs": SHORT}
+    kwargs = {"cell": rocksalt.cell[:] * INV_BOHR, "pbc": rocksalt.pbc, "cutoffs": SHORT_D4}
     base = _oracle_d4.evaluate(*args, parameters=PBE, **kwargs)
     upstream = _oracle_d4.evaluate(
         *args,
@@ -224,7 +224,7 @@ def test_charges_sum_to_the_total_charge_and_respond_to_it() -> None:
 def test_converged_ewald_is_independent_of_alpha_and_cell_choice() -> None:
     crystal = structures.rocksalt_primitive()
     args = (crystal.numbers, crystal.positions * INV_BOHR)
-    kwargs = {"cell": crystal.cell[:] * INV_BOHR, "pbc": crystal.pbc, "cutoffs": SHORT}
+    kwargs = {"cell": crystal.cell[:] * INV_BOHR, "pbc": crystal.pbc, "cutoffs": SHORT_D4}
     default = _oracle_d4.evaluate(*args, parameters=PBE_PAIR, ewald="converged", **kwargs)
     other = _oracle_d4.evaluate(
         *args,
@@ -245,7 +245,7 @@ def test_converged_ewald_is_independent_of_alpha_and_cell_choice() -> None:
         parameters=PBE_PAIR,
         cell=big.cell[:] * INV_BOHR,
         pbc=big.pbc,
-        cutoffs=SHORT,
+        cutoffs=SHORT_D4,
         ewald="converged",
     )
     np.testing.assert_allclose(
@@ -262,7 +262,7 @@ def test_upstream_ewald_is_cell_dependent() -> None:
         parameters=PBE_PAIR,
         cell=crystal.cell[:] * INV_BOHR,
         pbc=crystal.pbc,
-        cutoffs=SHORT,
+        cutoffs=SHORT_D4,
         gradient=False,
     )
     big = crystal.repeat((2, 2, 2))
@@ -272,7 +272,7 @@ def test_upstream_ewald_is_cell_dependent() -> None:
         parameters=PBE_PAIR,
         cell=big.cell[:] * INV_BOHR,
         pbc=big.pbc,
-        cutoffs=SHORT,
+        cutoffs=SHORT_D4,
         gradient=False,
     )
     assert primitive.ewald_alpha is not None

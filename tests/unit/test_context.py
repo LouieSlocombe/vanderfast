@@ -6,18 +6,17 @@ from pathlib import Path
 import numpy as np
 import pytest
 from support import oracle_native
+from support.inputs import SHORT_D3
 
 import vanderfast.context as context_module
 from vanderfast import _oracle, resolve_parameters
 from vanderfast.context import D3Context, evaluate, parse_device
 from vanderfast.data import read_reference_blob
 from vanderfast.errors import InputError, ParameterError, UnsupportedFeatureError
-from vanderfast.parameters import Cutoffs
 from vanderfast.testing import structures
 from vanderfast.units import BOHR, HARTREE, INV_BOHR
 
 PBE_ATM = resolve_parameters(method="pbe", damping="bj", atm=True)
-SHORT = Cutoffs(cn=15.0, disp2=20.0, disp3=15.0)
 
 
 @pytest.fixture(autouse=True)
@@ -59,7 +58,7 @@ def test_construction_validates_input(kwargs: dict[str, object], error: type[Exc
 
 def test_energy_forces_and_strain_match_the_oracle_in_public_units() -> None:
     atoms = structures.skewed_triclinic()
-    context = D3Context(atoms.numbers, PBE_ATM, cutoff=SHORT)
+    context = D3Context(atoms.numbers, PBE_ATM, cutoff=SHORT_D3)
     result = context.evaluate(
         atoms.positions,
         cell=atoms.cell[:],
@@ -72,7 +71,7 @@ def test_energy_forces_and_strain_match_the_oracle_in_public_units() -> None:
         parameters=PBE_ATM,
         cell=atoms.cell[:] * INV_BOHR,
         pbc=atoms.pbc,
-        cutoffs=SHORT,
+        cutoffs=SHORT_D3,
     )
     assert reference.gradient is not None
     assert reference.strain_derivative is not None
@@ -120,7 +119,7 @@ def test_evaluate_validates_requests(kwargs: dict[str, object], error: type[Exce
 
 
 def test_stress_requires_a_non_degenerate_cell() -> None:
-    context = D3Context([18], PBE_ATM, cutoff=SHORT)
+    context = D3Context([18], PBE_ATM, cutoff=SHORT_D3)
     with pytest.raises(UnsupportedFeatureError):
         context.evaluate(
             [[0.0, 0.0, 0.0]], cell=np.diag([3.0, 3.0, 0.0]), pbc=True, properties=["stress"]

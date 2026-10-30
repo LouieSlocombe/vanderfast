@@ -1,15 +1,19 @@
 """GPU pair D3(BJ): fixtures, intermediates, neighbour sets, and derivatives."""
 
 import dataclasses
+from collections.abc import Callable
 
 import numpy as np
 import pytest
+from ase import Atoms
 from support import native_helpers as nh
+from support.edges import edge_keys, has_duplicates, reversed_edge_keys
 from support.fd import agrees_over_sweep, position_gradient
 from support.fixtures import FixtureCase, all_cases
+from support.inputs import bohr
 
 from vanderfast import _oracle, resolve_parameters
-from vanderfast.data import parse_reference_tables
+from vanderfast.data import SECTION_REF_CN, load_reference_tables, parse_reference_tables
 from vanderfast.errors import InputError
 from vanderfast.parameters import Cutoffs
 from vanderfast.testing import structures
@@ -36,12 +40,11 @@ def test_pair_cases_match_dftd3(case: FixtureCase) -> None:
     "build",
     [structures.water_dimer, structures.benzene_dimer, structures.mixed_fragment],
 )
-def test_intermediates_match_the_oracle(build) -> None:  # type: ignore[no-untyped-def]
-    atoms = build()
-    positions = atoms.positions * INV_BOHR
-    ctx = nh.context(atoms.numbers, PBE)
+def test_intermediates_match_the_oracle(build: Callable[[], Atoms]) -> None:
+    numbers, positions, _, _ = bohr(build())
+    ctx = nh.context(numbers, PBE)
     debug = ctx.debug(positions, np.zeros((3, 3)), (False, False, False), derivatives=True)
-    oracle = _oracle.evaluate(atoms.numbers, positions, parameters=PBE)
+    oracle = _oracle.evaluate(numbers, positions, parameters=PBE)
     np.testing.assert_allclose(debug["cn"], oracle.cn, rtol=1e-13, atol=1e-15)
     np.testing.assert_allclose(debug["weights"][:, :7], oracle.weights, rtol=1e-12, atol=1e-15)
     assert oracle.dweights is not None
@@ -53,8 +56,6 @@ def test_intermediates_match_the_oracle(build) -> None:  # type: ignore[no-untyp
 
 @pytest.mark.parametrize("target", [10.0, 14.0, 16.5, 40.0])
 def test_exceptional_weight_branches_match_the_oracle(target: float) -> None:
-    from vanderfast.data import load_reference_tables  # noqa: PLC0415
-
     tables = load_reference_tables()
     rc = tables.rcov[1] + tables.rcov[6]
     if target < 18:  # CN = 18 c(R) for an H atom inside a shell of 18 carbon atoms
@@ -77,11 +78,10 @@ def test_exceptional_weight_branches_match_the_oracle(target: float) -> None:
 
 
 def test_tied_maximum_references_on_the_device() -> None:
-    from vanderfast.data import load_reference_tables  # noqa: PLC0415
-
-    carbon = list(load_reference_tables().reference_cn(6))
+    tables = load_reference_tables()
+    carbon = list(tables.reference_cn(6))
     carbon[3] = carbon[4]
-    blob = nh.tables_with_reference_cn(6, carbon)
+    blob = nh.patched_reference_blob(SECTION_REF_CN, int(tables.ref_offset[6]), carbon)
     tied = parse_reference_tables(blob)
     atoms = structures.shell_cluster(6, 6, 60, 0.6)
     positions = atoms.positions * INV_BOHR
@@ -103,25 +103,22 @@ def test_tied_maximum_references_on_the_device() -> None:
         (lambda: structures.simple_cubic(6, 1.8), 20.0),
     ],
 )
-def test_neighbour_graph_equals_the_cpu_enumeration(build, cutoff: float) -> None:  # type: ignore[no-untyped-def]
-    atoms = build()
-    positions = atoms.positions * INV_BOHR
-    cell = atoms.cell[:] * INV_BOHR if atoms.pbc.any() else np.zeros((3, 3))
-    pbc = tuple(bool(p) for p in atoms.pbc)
-    cutoffs = Cutoffs(cn=cutoff, disp2=cutoff, disp3=cutoff)
-    ctx = nh.context(atoms.numbers, PBE, cutoffs)
-    debug = ctx.debug(positions, cell, pbc, derivatives=False)
-    cpu = nh.native().enumerate_edges(positions, cell, pbc, cutoff)
-    gpu_edges = nh.edge_keys(debug["edge_i"], debug["edge_j"], debug["edge_shift"])
-    cpu_edges = nh.edge_keys(cpu["i"], cpu["j"], cpu["shift"])
-    assert len(gpu_edges) == len(debug["edge_i"])
-    assert gpu_edges == cpu_edges
-    for i, j, *n in gpu_edges:
-        assert (j, i, *(-x for x in n)) in gpu_edges
-    oracle = _oracle.directed_edges(
-        _oracle.make_geometry(atoms.numbers, positions, cell, atoms.pbc), cutoff
-    )
-    assert len(oracle) == len(cpu_edges)
+def test_neighbour_graph_equals_the_cpu_enumeration(
+    build: Callable[[], Atoms], cutoff: float
+) -> None:
+    numbers, positions, cell, pbc = bohr(build())
+    cell = np.zeros((3, 3)) if cell is None else cell
+    flags = tuple(bool(p) for p in pbc)
+    ctx = nh.context(numbers, PBE, Cutoffs(cn=cutoff, disp2=cutoff, disp3=cutoff))
+    debug = ctx.debug(positions, cell, flags, derivatives=False)
+    edges = (debug["edge_i"], debug["edge_j"], debug["edge_shift"])
+    gpu = edge_keys(*edges)
+    assert not has_duplicates(gpu)
+    cpu = nh.native().enumerate_edges(positions, cell, flags, cutoff)
+    np.testing.assert_array_equal(gpu, edge_keys(cpu["i"], cpu["j"], cpu["shift"]))
+    np.testing.assert_array_equal(reversed_edge_keys(*edges), gpu)
+    oracle = _oracle.directed_edges(_oracle.make_geometry(numbers, positions, cell, pbc), cutoff)
+    np.testing.assert_array_equal(edge_keys(oracle.i, oracle.j, oracle.shift), gpu)
 
 
 def test_energy_only_path_reproduces_the_energy_exactly() -> None:

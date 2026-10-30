@@ -8,19 +8,20 @@ import pytest
 from ase import Atoms
 from support import native_helpers as nh
 from support.fd import agrees_over_sweep, position_gradient, strain_derivative
+from support.inputs import SHORT_D4
 
 from vanderfast import _oracle_d4
 from vanderfast.ase import D4Calculator
 from vanderfast.context_d4 import EwaldMode
-from vanderfast.parameters_d4 import D4Cutoffs, resolve_d4_parameters
+from vanderfast.parameters_d4 import resolve_d4_parameters
 from vanderfast.testing import structures
-from vanderfast.units import INV_BOHR
+from vanderfast.units import BOHR, INV_BOHR
 
 pytestmark = pytest.mark.cuda
 
 PBE = resolve_d4_parameters(method="pbe")
 PBE_PAIR = resolve_d4_parameters(method="pbe", atm=False)
-SHORT = D4Cutoffs(cn=20.0, disp2=25.0, disp3=15.0)
+SHORT_D4_ANGSTROM = {key: getattr(SHORT_D4, key) * BOHR for key in SHORT_D4.KEYS}
 FULL = (True, True, True)
 EWALD: list[EwaldMode] = ["upstream", "converged"]
 
@@ -38,14 +39,14 @@ def _rattled(
 @pytest.mark.parametrize("name", sorted(structures.IONIC))
 def test_gpu_matches_the_oracle(name: str, ewald: EwaldMode) -> None:
     numbers, positions, cell = _rattled(structures.IONIC[name])
-    result = nh.run(nh.d4_context(numbers, PBE, SHORT, ewald=ewald), positions, cell, FULL)
+    result = nh.run(nh.d4_context(numbers, PBE, SHORT_D4, ewald=ewald), positions, cell, FULL)
     oracle = _oracle_d4.evaluate(
         numbers,
         positions,
         parameters=PBE,
         cell=cell,
         pbc=FULL,
-        cutoffs=SHORT,
+        cutoffs=SHORT_D4,
         ewald=ewald,
         gradient=True,
     )
@@ -68,7 +69,7 @@ def test_gpu_matches_the_oracle(name: str, ewald: EwaldMode) -> None:
 @pytest.mark.parametrize("name", ["mgo_primitive", "caf2_primitive", "elongated_cell"])
 def test_forces_and_strain_match_finite_differences(name: str, ewald: EwaldMode) -> None:
     numbers, positions, cell = _rattled(structures.IONIC[name])
-    ctx = nh.d4_context(numbers, PBE, SHORT, ewald=ewald)
+    ctx = nh.d4_context(numbers, PBE, SHORT_D4, ewald=ewald)
     result = nh.run(ctx, positions, cell, FULL)
 
     def energy(x: np.ndarray, h: np.ndarray = cell) -> float:
@@ -88,7 +89,7 @@ def test_forces_and_strain_match_finite_differences(name: str, ewald: EwaldMode)
 def test_partial_periodicity_is_fully_periodic(name: str) -> None:
     atoms = structures.PARTIAL[name]()
     positions, cell = atoms.positions * INV_BOHR, atoms.cell[:] * INV_BOHR
-    ctx = nh.d4_context(atoms.numbers, PBE, SHORT)
+    ctx = nh.d4_context(atoms.numbers, PBE, SHORT_D4)
     partial = nh.run(ctx, positions, cell, tuple(bool(p) for p in atoms.pbc))
     full = nh.run(ctx, positions, cell, FULL)
     assert partial["energy"] == full["energy"]
@@ -100,7 +101,7 @@ def test_partial_periodicity_is_fully_periodic(name: str) -> None:
 @pytest.mark.parametrize("ewald", EWALD)
 def test_lattice_translations_of_atoms_change_nothing(ewald: EwaldMode) -> None:
     numbers, positions, cell = _rattled(structures.magnesia_conventional)
-    ctx = nh.d4_context(numbers, PBE, SHORT, ewald=ewald)
+    ctx = nh.d4_context(numbers, PBE, SHORT_D4, ewald=ewald)
     reference = nh.run(ctx, positions, cell, FULL)
     shifted = positions.copy()
     shifted[0] += cell[0] - 2.0 * cell[2]
@@ -117,7 +118,7 @@ def test_converged_ewald_is_supercell_consistent() -> None:
     big = crystal.repeat((2, 2, 2))
     results: list[dict[str, Any]] = []
     for atoms in (crystal, big):
-        ctx = nh.d4_context(atoms.numbers, PBE_PAIR, SHORT, ewald="converged")
+        ctx = nh.d4_context(atoms.numbers, PBE_PAIR, SHORT_D4, ewald="converged")
         results.append(nh.run(ctx, atoms.positions * INV_BOHR, atoms.cell[:] * INV_BOHR, FULL))
     primitive, supercell = results
     assert supercell["energy"] / 8 == pytest.approx(primitive["energy"], rel=1e-12)
@@ -132,7 +133,7 @@ def test_upstream_ewald_reproduces_the_reference_cell_dependence() -> None:
     big = crystal.repeat((2, 2, 2))
     charges = [
         nh.run(
-            nh.d4_context(atoms.numbers, PBE_PAIR, SHORT),
+            nh.d4_context(atoms.numbers, PBE_PAIR, SHORT_D4),
             atoms.positions * INV_BOHR,
             atoms.cell[:] * INV_BOHR,
             FULL,
@@ -153,7 +154,7 @@ def test_calculator_matches_the_reference_backend_with_stress() -> None:
     values = {}
     for backend in ("cuda", "reference"):
         probe = atoms.copy()
-        probe.calc = D4Calculator(method="pbe", backend=backend)
+        probe.calc = D4Calculator(method="pbe", backend=backend, cutoff=SHORT_D4_ANGSTROM)
         values[backend] = (
             probe.get_potential_energy(),
             probe.get_forces(),

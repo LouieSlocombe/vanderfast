@@ -4,6 +4,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 from support import native_helpers as nh
+from support.edges import IntArray, edge_keys, has_duplicates
 
 from vanderfast import resolve_parameters
 from vanderfast.parameters import Cutoffs
@@ -28,20 +29,20 @@ def _graph(
     cell: np.ndarray,
     pbc: tuple[bool, bool, bool],
     cutoff: float,
-) -> set[tuple[int, ...]]:
+) -> IntArray:
     cutoffs = Cutoffs(cn=cutoff, disp2=cutoff, disp3=cutoff)
     ctx = nh.context(numbers, PBE, cutoffs, builder=builder)
     debug = ctx.debug(positions, cell, pbc, derivatives=False)
-    keys = nh.edge_keys(debug["edge_i"], debug["edge_j"], debug["edge_shift"])
-    assert len(keys) == len(debug["edge_i"])  # no duplicates
+    keys = edge_keys(debug["edge_i"], debug["edge_j"], debug["edge_shift"])
+    assert not has_duplicates(keys)
     return keys
 
 
 def _cpu(
     positions: np.ndarray, cell: np.ndarray, pbc: tuple[bool, bool, bool], cutoff: float
-) -> set[tuple[int, ...]]:
+) -> IntArray:
     edges = nh.native().enumerate_edges(positions, cell, pbc, cutoff)
-    return nh.edge_keys(edges["i"], edges["j"], edges["shift"])
+    return edge_keys(edges["i"], edges["j"], edges["shift"])
 
 
 @pytest.mark.parametrize("seed", range(40))
@@ -55,8 +56,10 @@ def test_cell_bins_match_the_cpu_enumeration_on_random_cells(seed: int) -> None:
         positions = rng.uniform(-30.0, 30.0, (n, 3))
     cutoff = float(rng.choice([8.0, 15.0, 25.0]))
     expected = _cpu(positions, cell, pbc, cutoff)
-    assert _graph("cell_bins", np.full(n, 6), positions, cell, pbc, cutoff) == expected
-    assert _graph("brute_force", np.full(n, 6), positions, cell, pbc, cutoff) == expected
+    for builder in ("cell_bins", "brute_force"):
+        np.testing.assert_array_equal(
+            _graph(builder, np.full(n, 6), positions, cell, pbc, cutoff), expected
+        )
 
 
 @pytest.mark.parametrize(
@@ -92,7 +95,7 @@ def test_cutoffs_much_larger_than_the_cell(
     x = np.asarray(positions, dtype=np.float64)
     expected = _cpu(x, cell, pbc, cutoff)
     assert len(expected) > 100, label
-    assert _graph("cell_bins", numbers, x, cell, pbc, cutoff) == expected
+    np.testing.assert_array_equal(_graph("cell_bins", numbers, x, cell, pbc, cutoff), expected)
 
 
 def test_large_systems_agree_between_builders() -> None:
@@ -100,16 +103,18 @@ def test_large_systems_agree_between_builders() -> None:
     cell = np.diag([45.0, 49.5, 40.5]) + np.array([[0, 0, 0], [3.0, 0, 0], [2.0, 1.0, 0]])
     positions = rng.uniform(0.0, 1.0, (2000, 3)) @ cell
     pbc = (True, True, True)
-    assert _graph("cell_bins", np.full(2000, 8), positions, cell, pbc, 30.0) == _graph(
-        "brute_force", np.full(2000, 8), positions, cell, pbc, 30.0
+    np.testing.assert_array_equal(
+        _graph("cell_bins", np.full(2000, 8), positions, cell, pbc, 30.0),
+        _graph("brute_force", np.full(2000, 8), positions, cell, pbc, 30.0),
     )
     clusters = np.vstack(
         [rng.uniform(-5, 5, (200, 3)), rng.uniform(-5, 5, (200, 3)) + np.array([300.0, 0.0, 0.0])]
     )
     none = (False, False, False)
     zero = np.zeros((3, 3))
-    assert _graph("cell_bins", np.full(400, 1), clusters, zero, none, 20.0) == _cpu(
-        clusters, zero, none, 20.0
+    np.testing.assert_array_equal(
+        _graph("cell_bins", np.full(400, 1), clusters, zero, none, 20.0),
+        _cpu(clusters, zero, none, 20.0),
     )
 
 

@@ -6,13 +6,11 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
+from support import native_helpers
 from vanderfast import _oracle
 from vanderfast.parameters import Cutoffs, D3BJParameters
 
 FloatArray = npt.NDArray[np.float64]
-
-SHORT_CUTOFFS = Cutoffs(cn=15.0, disp2=20.0, disp3=15.0)
-"""Reduced cutoffs (bohr) that keep brute-force periodic evaluations fast."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -39,8 +37,6 @@ def cuda_evaluator(
     cutoffs: Cutoffs,
 ) -> Evaluation:
     """Evaluate with the CUDA backend through the native extension."""
-    from support import native_helpers  # noqa: PLC0415
-
     ctx = native_helpers.context(numbers, parameters, cutoffs)
     result = native_helpers.run(ctx, positions, cell, pbc)
     return Evaluation(result["energy"], result["gradient"], result["virial"])

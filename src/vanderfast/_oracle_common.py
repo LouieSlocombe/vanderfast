@@ -300,53 +300,87 @@ class AtmModel:
 
 
 @dataclass(frozen=True, eq=False)
+class Sites:
+    """The neighbour sites of one centre atom: atom indices ``j`` at displacements ``d``."""
+
+    centre: int
+    j: IntArray
+    d: FloatArray
+
+
+@dataclass(frozen=True, eq=False)
+class Candidates:
+    """Candidate triangles at one centre: pairs ``(a, b)`` of its neighbour sites."""
+
+    a: IntArray
+    b: IntArray
+    weight: FloatArray
+
+
+@dataclass(frozen=True, eq=False)
 class Triangles:
-    """Candidate triangles: centre i, sites j and k at ``vij`` and ``vik``."""
+    """Accepted triangles: centre i, sites j and k at ``vij`` and ``vik``, and ``vjk``."""
 
     i: IntArray
     j: IntArray
     k: IntArray
     vij: FloatArray
     vik: FloatArray
+    vjk: FloatArray
+    r2jk: FloatArray
     weight: FloatArray
 
 
-def _screen_triangles(model: AtmModel, tri: Triangles) -> tuple[Triangles, FloatArray] | None:
-    """Apply the third-edge cutoff and the C6 policy; return accepted triangles."""
+def _screen_triangles(model: AtmModel, sites: Sites, candidates: Candidates) -> Triangles | None:
+    """Apply the third-edge cutoff and the C6 policy; return accepted triangles.
+
+    Only candidates within the third-edge cutoff are gathered beyond their ``vjk``:
+    at the default cutoffs about half of them fail it.
+    """
     counters = model.counters
-    counters.candidates += int(tri.i.size)
-    vjk = tri.vik - tri.vij
+    a, b = candidates.a, candidates.b
+    counters.candidates += int(a.size)
+    vjk = sites.d[b] - sites.d[a]
     r2jk = np.einsum("ec,ec->e", vjk, vjk)
-    valid = (r2jk <= model.cutoff2) & (r2jk >= DBL_EPSILON)
+    near = np.flatnonzero((r2jk <= model.cutoff2) & (r2jk >= DBL_EPSILON))
+    a, b = a[near], b[near]
+    i, j, k = sites.centre, sites.j[a], sites.j[b]
     c6 = model.c6
     small = (
-        (np.abs(c6[tri.i, tri.j]) < model.c6_floor)
-        | (np.abs(c6[tri.i, tri.k]) < model.c6_floor)
-        | (np.abs(c6[tri.j, tri.k]) < model.c6_floor)
+        (np.abs(c6[i, j]) < model.c6_floor)
+        | (np.abs(c6[i, k]) < model.c6_floor)
+        | (np.abs(c6[j, k]) < model.c6_floor)
     )
-    counters.c6_skipped += int(np.count_nonzero(valid & small))
+    counters.c6_skipped += int(np.count_nonzero(small))
     if model.skip_small:
-        valid &= ~small
-    counters.accepted += int(np.count_nonzero(valid))
-    if not valid.any():
+        near, a, b, j, k = near[~small], a[~small], b[~small], j[~small], k[~small]
+    counters.accepted += int(near.size)
+    if near.size == 0:
         return None
-    accepted = Triangles(
-        tri.i[valid], tri.j[valid], tri.k[valid], tri.vij[valid], tri.vik[valid], tri.weight[valid]
+    return Triangles(
+        np.full(near.size, i, dtype=np.int64),
+        j,
+        k,
+        sites.d[a],
+        sites.d[b],
+        vjk[near],
+        r2jk[near],
+        candidates.weight[near],
     )
-    return accepted, vjk[valid]
 
 
-def _atm_triangles(model: AtmModel, candidates: Triangles, *, book_all: bool) -> None:
+def _atm_triangles(
+    model: AtmModel, sites: Sites, candidates: Candidates, *, book_all: bool
+) -> None:
     """Evaluate candidate triangles whose two centre edges already passed screening."""
-    screened = _screen_triangles(model, candidates)
-    if screened is None:
+    tri = _screen_triangles(model, sites, candidates)
+    if tri is None:
         return
-    tri, vjk = screened
-    i, j, k, vij, vik = tri.i, tri.j, tri.k, tri.vij, tri.vik
+    i, j, k, vij, vik, vjk = tri.i, tri.j, tri.k, tri.vij, tri.vik, tri.vjk
     c6ij, c6ik, c6jk = model.c6[i, j], model.c6[i, k], model.c6[j, k]
     r2ij = np.einsum("ec,ec->e", vij, vij)
     r2ik = np.einsum("ec,ec->e", vik, vik)
-    r2jk = np.einsum("ec,ec->e", vjk, vjk)
+    r2jk = tri.r2jk
     r0 = model.r0[i, j] * model.r0[i, k] * model.r0[j, k]
     alp3 = model.alp3
     r2 = r2ij * r2ik * r2jk
@@ -410,23 +444,16 @@ def chunked_pairs(n: int) -> Iterator[tuple[IntArray, IntArray]]:
         yield a, a + 1 + offsets
 
 
-def anchored_triangles(centre: int, site_j: IntArray, site_d: FloatArray) -> Iterator[Triangles]:
+def anchored_triangles(sites: Sites) -> Iterator[Candidates]:
     """Unordered pairs of distinct neighbour sites, weight 1/3 per anchor."""
-    for a, b in chunked_pairs(site_j.size):
-        count = a.size
-        yield Triangles(
-            np.full(count, centre, dtype=np.int64),
-            site_j[a],
-            site_j[b],
-            site_d[a],
-            site_d[b],
-            np.full(count, 1.0 / 3.0),
-        )
+    for a, b in chunked_pairs(sites.j.size):
+        yield Candidates(a, b, np.broadcast_to(1.0 / 3.0, a.shape))
 
 
-def upstream_triangles(centre: int, site_j: IntArray, site_d: FloatArray) -> Iterator[Triangles]:
+def upstream_triangles(sites: Sites) -> Iterator[Candidates]:
     """Upstream ``iat >= jat >= kat`` loops over all translations with ``triple_scale``."""
-    outer = np.flatnonzero(site_j <= centre)
+    site_j = sites.j
+    outer = np.flatnonzero(site_j <= sites.centre)
     step = max(1, CHUNK // max(site_j.size, 1))
     for start in range(0, outer.size, step):
         grid_u, grid_v = np.meshgrid(
@@ -436,15 +463,8 @@ def upstream_triangles(centre: int, site_j: IntArray, site_d: FloatArray) -> Ite
         flat_v: IntArray = grid_v.ravel().astype(np.int64)
         keep = site_j[flat_v] <= site_j[flat_u]
         uu, vv = flat_u[keep], flat_v[keep]
-        ii = np.full(uu.size, centre, dtype=np.int64)
-        yield Triangles(
-            ii,
-            site_j[uu],
-            site_j[vv],
-            site_d[uu],
-            site_d[vv],
-            triple_scale(ii, site_j[uu], site_j[vv]),
-        )
+        ii = np.full(uu.size, sites.centre, dtype=np.int64)
+        yield Candidates(uu, vv, triple_scale(ii, site_j[uu], site_j[vv]))
 
 
 def atm_term(model: AtmModel, edges: Edges, n_atoms: int, counting: AtmCounting) -> None:
@@ -454,5 +474,6 @@ def atm_term(model: AtmModel, edges: Edges, n_atoms: int, counting: AtmCounting)
     enumerate_triangles = anchored_triangles if counting == "anchored" else upstream_triangles
     for centre in range(n_atoms):
         rows = order[bounds[centre] : bounds[centre + 1]]
-        for candidates in enumerate_triangles(centre, edges.j[rows], edges.d[rows]):
-            _atm_triangles(model, candidates, book_all=counting == "upstream")
+        sites = Sites(centre, edges.j[rows], edges.d[rows])
+        for candidates in enumerate_triangles(sites):
+            _atm_triangles(model, sites, candidates, book_all=counting == "upstream")

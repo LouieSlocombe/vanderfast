@@ -5,24 +5,17 @@ from collections.abc import Callable
 import numpy as np
 import pytest
 from ase import Atoms
-from support.backends import (
-    SHORT_CUTOFFS,
-    Evaluation,
-    Evaluator,
-    cuda_evaluator,
-    oracle_evaluator,
-)
+from support.backends import Evaluation, Evaluator, cuda_evaluator, oracle_evaluator
+from support.inputs import SHORT_D3, bohr
 
 from vanderfast import resolve_parameters
 from vanderfast.testing import structures
-from vanderfast.units import INV_BOHR
 
 PBE_ATM = resolve_parameters(method="pbe", damping="bj", atm=True)
-PBE = resolve_parameters(method="pbe", damping="bj", atm=False)
 
 BACKENDS = [
-    pytest.param((oracle_evaluator, PBE_ATM), id="oracle"),
-    pytest.param((cuda_evaluator, PBE_ATM), id="cuda", marks=pytest.mark.cuda),
+    pytest.param(oracle_evaluator, id="oracle"),
+    pytest.param(cuda_evaluator, id="cuda", marks=pytest.mark.cuda),
 ]
 
 Run = Callable[[Atoms], Evaluation]
@@ -30,14 +23,11 @@ Run = Callable[[Atoms], Evaluation]
 
 @pytest.fixture(params=BACKENDS)
 def evaluate(request: pytest.FixtureRequest) -> Run:
-    evaluator: Evaluator
-    evaluator, parameters = request.param
+    evaluator: Evaluator = request.param
 
     def run(atoms: Atoms) -> Evaluation:
-        cell = atoms.cell[:] * INV_BOHR if atoms.pbc.any() else None
-        return evaluator(
-            atoms.numbers, atoms.positions * INV_BOHR, cell, atoms.pbc, parameters, SHORT_CUTOFFS
-        )
+        numbers, positions, cell, pbc = bohr(atoms)
+        return evaluator(numbers, positions, cell, pbc, PBE_ATM, SHORT_D3)
 
     return run
 

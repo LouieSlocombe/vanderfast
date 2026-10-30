@@ -1,31 +1,23 @@
 """The NumPy oracle: validation, images, weights, counting, and derivatives."""
 
 import dataclasses
-from typing import Any
+from collections.abc import Callable
 
 import numpy as np
-import numpy.typing as npt
 import pytest
 from ase import Atoms
-from support.backends import SHORT_CUTOFFS
+from support.edges import edge_keys, has_duplicates, reversed_edge_keys
 from support.fd import agrees_over_sweep, position_gradient, strain_derivative
+from support.inputs import SHORT_D3, bohr
 
 from vanderfast import _oracle, resolve_parameters
 from vanderfast.data import load_reference_tables, pair_index
 from vanderfast.errors import InputError
 from vanderfast.parameters import Cutoffs, D3BJParameters
 from vanderfast.testing import structures
-from vanderfast.units import INV_BOHR
 
 PBE_ATM = resolve_parameters(method="pbe", damping="bj", atm=True)
 PBE = resolve_parameters(method="pbe", damping="bj", atm=False)
-
-
-def _bohr(
-    atoms: Atoms,
-) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64], npt.NDArray[np.float64] | None, Any]:
-    cell = atoms.cell[:] * INV_BOHR if atoms.pbc.any() else None
-    return atoms.numbers, atoms.positions * INV_BOHR, cell, atoms.pbc
 
 
 @pytest.mark.parametrize(
@@ -78,7 +70,7 @@ def test_molecules_have_no_images() -> None:
 def test_image_ranges_are_complete_for_unwrapped_positions() -> None:
     cell = np.array([[5.0, 0.0, 0.0], [1.5, 4.5, 0.0], [0.5, 1.0, 4.0]])
     wrapped = np.array([[0.2, 0.3, 0.1], [2.5, 2.0, 1.5]])
-    shifted = wrapped + np.array([3, -2, 0]) @ cell + np.array([[0, 0, 0], [1, 1, 1]]) @ cell * 0
+    shifted = wrapped + np.array([3, -2, 0]) @ cell
     shifted[1] += np.array([-4, 0, 5]) @ cell
     geometry_w = _oracle.make_geometry([6, 8], wrapped, cell, (True, True, True))
     geometry_u = _oracle.make_geometry([6, 8], shifted, cell, (True, True, True))
@@ -91,17 +83,15 @@ def test_image_ranges_are_complete_for_unwrapped_positions() -> None:
 
 
 def test_directed_edges_have_exact_reverse_and_no_self_edge() -> None:
-    numbers, positions, cell, pbc = _bohr(structures.rocksalt_primitive())
+    numbers, positions, cell, pbc = bohr(structures.rocksalt_primitive())
     geometry = _oracle.make_geometry(numbers, positions, cell, pbc)
     edges = _oracle.directed_edges(geometry, 15.0)
-    keys = {
-        (int(i), int(j), *map(int, n))
-        for i, j, n in zip(edges.i, edges.j, edges.shift, strict=True)
-    }
-    for i, j, *n in keys:
-        assert (j, i, *(-x for x in n)) in keys
-    assert not any(i == j and n == [0, 0, 0] for i, j, *n in keys)
-    assert any(i == j for i, j, *_ in keys)  # images of the same atom are kept
+    keys = edge_keys(edges.i, edges.j, edges.shift)
+    assert not has_duplicates(keys)
+    np.testing.assert_array_equal(reversed_edge_keys(edges.i, edges.j, edges.shift), keys)
+    same_atom = edges.i == edges.j
+    assert not np.any(same_atom & np.all(edges.shift == 0, axis=1))
+    assert same_atom.any()  # images of the same atom are kept
 
 
 def test_weights_are_normalised_with_correct_derivatives() -> None:
@@ -169,9 +159,9 @@ def test_c6_coefficients_are_symmetric_with_endpoint_derivatives() -> None:
     ],
     ids=["water_dimer", "one_atom", "two_atom", "slab", "wire"],
 )
-def test_directed_and_upstream_counting_agree(build) -> None:  # type: ignore[no-untyped-def]
-    numbers, positions, cell, pbc = _bohr(build())
-    kwargs = {"parameters": PBE_ATM, "cell": cell, "pbc": pbc, "cutoffs": SHORT_CUTOFFS}
+def test_directed_and_upstream_counting_agree(build: Callable[[], Atoms]) -> None:
+    numbers, positions, cell, pbc = bohr(build())
+    kwargs = {"parameters": PBE_ATM, "cell": cell, "pbc": pbc, "cutoffs": SHORT_D3}
     ours = _oracle.evaluate(numbers, positions, **kwargs)
     upstream = _oracle.evaluate(
         numbers, positions, pair_counting="upstream", atm_counting="upstream", **kwargs
@@ -190,7 +180,7 @@ def test_directed_and_upstream_counting_agree(build) -> None:  # type: ignore[no
 
 
 def test_anchored_triangles_count_each_triangle_three_times() -> None:
-    numbers, positions, _, _ = _bohr(structures.equilateral_trimer(18, 3.5))
+    numbers, positions, _, _ = bohr(structures.equilateral_trimer(18, 3.5))
     ours = _oracle.evaluate(numbers, positions, parameters=PBE_ATM)
     upstream = _oracle.evaluate(numbers, positions, parameters=PBE_ATM, atm_counting="upstream")
     assert ours.counts["atm_accepted"] == 3
@@ -200,8 +190,8 @@ def test_anchored_triangles_count_each_triangle_three_times() -> None:
 
 
 def test_energy_only_path_matches_gradient_path() -> None:
-    numbers, positions, cell, pbc = _bohr(structures.skewed_triclinic())
-    kwargs = {"parameters": PBE_ATM, "cell": cell, "pbc": pbc, "cutoffs": SHORT_CUTOFFS}
+    numbers, positions, cell, pbc = bohr(structures.skewed_triclinic())
+    kwargs = {"parameters": PBE_ATM, "cell": cell, "pbc": pbc, "cutoffs": SHORT_D3}
     full = _oracle.evaluate(numbers, positions, **kwargs)
     energy = _oracle.evaluate(numbers, positions, gradient=False, **kwargs)
     assert energy.energy == full.energy
@@ -223,7 +213,7 @@ def test_empty_and_single_atom_molecules_have_zero_dispersion() -> None:
 
 
 def test_inactive_terms_are_skipped() -> None:
-    numbers, positions, _, _ = _bohr(structures.water_dimer())
+    numbers, positions, _, _ = bohr(structures.water_dimer())
     atm_only = D3BJParameters(s6=0.0, s8=0.0, a1=0.4, a2=5.0, s9=1.0, alp=14.0)
     result = _oracle.evaluate(numbers, positions, parameters=atm_only)
     assert result.energy_pair == 0.0
@@ -237,7 +227,7 @@ def test_atm_c6_policy_only_differs_for_tiny_coefficients() -> None:
     start = int(tables.c6_offset[pair_index(18, 18)])
     c6[start] = 1e-20  # argon has a single reference, so C6(Ar, Ar) becomes tiny
     tiny = dataclasses.replace(tables, c6_flat=c6)
-    numbers, positions, _, _ = _bohr(structures.equilateral_trimer(18, 3.5))
+    numbers, positions, _, _ = bohr(structures.equilateral_trimer(18, 3.5))
     skip = _oracle.evaluate(numbers, positions, parameters=PBE_ATM, tables=tiny)
     skip_energy = _oracle.evaluate(
         numbers, positions, parameters=PBE_ATM, tables=tiny, gradient=False
@@ -253,7 +243,7 @@ def test_atm_c6_policy_only_differs_for_tiny_coefficients() -> None:
 
 
 def test_gradient_matches_finite_differences() -> None:
-    numbers, positions, _, _ = _bohr(structures.scalene_trimer())
+    numbers, positions, _, _ = bohr(structures.scalene_trimer())
     result = _oracle.evaluate(numbers, positions, parameters=PBE_ATM)
 
     def energy(x: np.ndarray) -> float:
@@ -267,7 +257,7 @@ def test_gradient_matches_finite_differences() -> None:
 
 
 def test_strain_derivative_matches_finite_differences() -> None:
-    numbers, positions, cell, pbc = _bohr(structures.skewed_triclinic())
+    numbers, positions, cell, pbc = bohr(structures.skewed_triclinic())
     cutoffs = Cutoffs(cn=12.0, disp2=16.0, disp3=12.0)
     result = _oracle.evaluate(
         numbers, positions, parameters=PBE_ATM, cell=cell, pbc=pbc, cutoffs=cutoffs

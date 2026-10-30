@@ -140,7 +140,6 @@ def test_todict_is_json_serialisable() -> None:
     assert calc.todict()["d3_parameters"]["s8"] == 0.7875
     calc.set(parameters=params)
     assert calc.resolved_parameters is params
-    assert calc.resolved_parameters is params
     named = D3Calculator(method="b3lyp", damping="bj", atm=True)
     assert named.todict()["method"] == "b3lyp"
 

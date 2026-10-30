@@ -8,10 +8,11 @@ import pytest
 from ase import Atoms
 from support import native_helpers as nh
 from support.fixtures_d4 import D4FixtureCase, load_family
+from support.inputs import SHORT_D4
 from support.tolerances import D4_GPU_CHARGE_ABS, d4_gpu_energy_tolerance
 
 from vanderfast.errors import ChargeSolverError, DeviceOutOfMemoryError
-from vanderfast.parameters_d4 import D4Cutoffs, resolve_d4_parameters
+from vanderfast.parameters_d4 import resolve_d4_parameters
 from vanderfast.testing import structures
 from vanderfast.units import INV_BOHR
 
@@ -19,7 +20,6 @@ pytestmark = pytest.mark.cuda
 
 PBE = resolve_d4_parameters(method="pbe")
 PBE_PAIR = resolve_d4_parameters(method="pbe", atm=False)
-SHORT = D4Cutoffs(cn=20.0, disp2=25.0, disp3=15.0)
 REFINE_TARGET = 2.0**-48
 
 
@@ -55,6 +55,17 @@ def _system(name: str) -> tuple[Atoms, float, bool]:
     return atoms, charge, periodic
 
 
+def _context(atoms: Atoms, charge: float, parameters: Any = PBE, **options: Any) -> Any:
+    return nh.d4_context(atoms.numbers, parameters, SHORT_D4, charge=charge, **options)
+
+
+def _run(ctx: Any, atoms: Atoms, periodic: bool, *, gradient: bool = True) -> dict[str, Any]:
+    cell = atoms.cell[:] * INV_BOHR if periodic else None
+    return nh.run(
+        ctx, atoms.positions * INV_BOHR, cell, (periodic,) * 3, gradient=gradient, virial=gradient
+    )
+
+
 def _evaluate(
     atoms: Atoms,
     charge: float,
@@ -64,11 +75,7 @@ def _evaluate(
     gradient: bool = True,
     **options: Any,
 ) -> dict[str, Any]:
-    ctx = nh.d4_context(atoms.numbers, parameters, SHORT, charge=charge, **options)
-    cell = atoms.cell[:] * INV_BOHR if periodic else None
-    return nh.run(
-        ctx, atoms.positions * INV_BOHR, cell, (periodic,) * 3, gradient=gradient, virial=gradient
-    )
+    return _run(_context(atoms, charge, parameters, **options), atoms, periodic, gradient=gradient)
 
 
 CASES = [
@@ -126,15 +133,6 @@ def test_packed_minres_matches_the_literal_path(name: str) -> None:
     np.testing.assert_allclose(packed["virial"], literal["virial"], rtol=0, atol=1e-13)
 
 
-def _context(atoms: Atoms, charge: float, **options: Any) -> Any:
-    return nh.d4_context(atoms.numbers, PBE, SHORT, charge=charge, **options)
-
-
-def _run(ctx: Any, atoms: Atoms, periodic: bool) -> dict[str, Any]:
-    cell = atoms.cell[:] * INV_BOHR if periodic else None
-    return nh.run(ctx, atoms.positions * INV_BOHR, cell, (periodic,) * 3)
-
-
 @pytest.mark.parametrize(
     ("name", "ewald"), [("acetate_cluster_189", "upstream"), ("mgo_216", "converged")]
 )
@@ -184,11 +182,9 @@ def test_matrix_limit_raises_and_leaves_the_context_usable() -> None:
 def test_pair_only_results_are_bitwise_reproducible(name: str) -> None:
     """MINRES and the tiled reverse use fixed-order reductions (ATM still uses atomics)."""
     atoms, charge, periodic = _system(name)
-    ctx = nh.d4_context(atoms.numbers, PBE_PAIR, SHORT, charge=charge)
-    cell = atoms.cell[:] * INV_BOHR if periodic else None
-    x = atoms.positions * INV_BOHR
-    first = nh.run(ctx, x, cell, (periodic,) * 3)
-    again = nh.run(ctx, x, cell, (periodic,) * 3)
+    ctx = _context(atoms, charge, PBE_PAIR)
+    first = _run(ctx, atoms, periodic)
+    again = _run(ctx, atoms, periodic)
     fresh = _evaluate(atoms, charge, periodic, PBE_PAIR)
     for other in (again, fresh):
         assert other["energy"] == first["energy"]
@@ -216,21 +212,17 @@ def test_minres_reports_its_diagnostics() -> None:
 
 def test_warm_start_reuses_the_previous_solution() -> None:
     atoms, charge, _ = _system("acetate_cluster_189")
-    ctx = nh.d4_context(atoms.numbers, PBE, SHORT, charge=charge, warm_start=True)
+    ctx = _context(atoms, charge, warm_start=True)
     x = atoms.positions * INV_BOHR
     cold = nh.run(ctx, x)
     moved = x + np.random.default_rng(4).normal(scale=1e-3, size=x.shape)
     warm = nh.run(ctx, moved)
-    reference = _evaluate_positions(atoms, charge, moved)
+    reference = nh.run(_context(atoms, charge), moved)
     assert cold["info"]["eeq_warm_started"] is False
     assert warm["info"]["eeq_warm_started"] is True
     assert warm["info"]["eeq_iterations"] < cold["info"]["eeq_iterations"]
     np.testing.assert_allclose(warm["charges"], reference["charges"], atol=1e-12)
     assert warm["energy"] == pytest.approx(reference["energy"], rel=1e-13)
-
-
-def _evaluate_positions(atoms: Atoms, charge: float, positions: np.ndarray) -> dict[str, Any]:
-    return nh.run(nh.d4_context(atoms.numbers, PBE, SHORT, charge=charge), positions)
 
 
 def test_iteration_cap_raises_a_charge_solver_error() -> None:
